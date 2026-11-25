@@ -1,0 +1,31 @@
+cmdclass's shell and provider fixtures are adapted from DeployShield:
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_command_splitting.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_normalization.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_databases.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_iac_tools.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_cloud_providers.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_other_providers.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_context_blocking.py
+https://github.com/matanryngler/deployshield/blob/54029f40a4737048f93143df38a857446025ea28/tests/test_integration.py
+
+MIT License
+
+Copyright (c) 2026 Matan Ryngler
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

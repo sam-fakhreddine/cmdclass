@@ -1,0 +1,7 @@
+DANGEROUS  5:1  aws s3 rm s3://example/report.txt  changes S3 resources
+SENSITIVE  4:1  aws secretsmanager get-secret-value --secret-id example  returns an existing secret value
+UNKNOWN    6:1  source ./not-followed.sh  runs another file
+LOCAL      3:1  printf '%s\n' "synthetic output" > sample-output.txt  writes to a local output redirect
+LOCAL      7:10  mkdir example  changes local data
+READ-ONLY  2:1  echo "starting review"  no filesystem or remote write identified
+summary: 1 read-only, 2 local, 1 unknown, 1 sensitive, 1 dangerous

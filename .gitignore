@@ -1,0 +1,12 @@
+/node_modules/
+/dist/
+/*.tgz
+/wow*.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+secrets/
+credentials/

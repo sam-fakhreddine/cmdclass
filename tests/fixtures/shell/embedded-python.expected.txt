@@ -1,0 +1,3 @@
+DANGEROUS  6:1  delete_bucket(...)  IAM s3:DeleteBucket (Write)
+READ-ONLY  5:1  list_buckets(...)  IAM s3:ListAllMyBuckets (List)
+summary: 1 read-only, 0 local, 0 unknown, 0 sensitive, 1 dangerous

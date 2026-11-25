@@ -1,0 +1,3 @@
+DANGEROUS  5:1  delete(...)  IAM s3-object-lambda:DeleteObject (Write)
+DANGEROUS  6:1  delete(...)  IAM s3:BypassGovernanceRetention (Permissions management)
+summary: 0 read-only, 0 local, 0 unknown, 0 sensitive, 2 dangerous
