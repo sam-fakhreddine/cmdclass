@@ -52,4 +52,8 @@ Python subprocess launches retain an UNKNOWN finding. Some literal AWS commands 
 npm run test:proof
 ```
 
+## Release
+
+Bump the package version with `npm version patch --no-git-tag-version --ignore-scripts` (or use `minor` for a feature release), then commit and push the version change. Push a matching `v<version>` tag to run the release workflow. It runs the proof suite and attaches the `npm pack` tarball to a GitHub Release.
+
 See the [proof of working](./docs/proof-of-working.md) for test evidence and known gaps, and the [build prompt](./cmdclass-build-prompt.md) for scope and design details. Analysis uses the bundled AWS snapshot; `cmdclass --update-aws-data` explicitly refreshes it.
