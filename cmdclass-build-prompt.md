@@ -34,11 +34,11 @@ SENSITIVE detection covers the explicit rules in this prompt; it does not infer 
 
 Report them in this order, with DANGEROUS the most visible:
 
-1. **DANGEROUS**: changes a cloud account or a remote system, deletes local data, or creates a new long-lived credential or a new way in. The last group covers `iam create-access-key`, `s3 presign`, IAM login profiles, service-specific credentials and signed URLs, even where AWS labels the action "Read".
-2. **SENSITIVE**: changes nothing, but reads an existing secret or hands out a short-lived credential. These are normal in scripts, so they are highlighted, not alarmed. Each one carries a plain note saying what it hands back, using the secret name, role or object from the arguments when they are literal.
-3. **UNKNOWN**: the tool cannot tell. Always give the reason.
-4. **LOCAL**: changes only this machine, for example a file, a kubeconfig or the local AWS CLI config.
-5. **READ-ONLY**: changes nothing anywhere and exposes no secret.
+1. `DANGEROUS`: changes a cloud account or a remote system, deletes local data, or creates a new long-lived credential or a new way in. The last group covers `iam create-access-key`, `s3 presign`, IAM login profiles, service-specific credentials and signed URLs, even where AWS labels the action "Read".
+2. `SENSITIVE`: changes nothing, but reads an existing secret or hands out a short-lived credential. These are normal in scripts, so they are highlighted, not alarmed. Each one carries a plain note saying what it hands back, using the secret name, role or object from the arguments when they are literal.
+3. `UNKNOWN`: the tool cannot tell. Always give the reason.
+4. `LOCAL`: changes only this machine, for example a file, a kubeconfig or the local AWS CLI config.
+5. `READ-ONLY`: changes nothing anywhere and exposes no secret.
 
 When one command fits more than one class, the worse class wins. The order of badness is DANGEROUS, then SENSITIVE, then UNKNOWN, then LOCAL, then READ-ONLY.
 
@@ -63,18 +63,18 @@ Output options:
 
 ## How it decides
 
-1. **Parse.** Use a real parser for the supported bash/sh syntax, keeping line and column locations. The ported DeployShield splitter is a helper for segmenting commands, not a substitute for parsing shell syntax. Parse the whole script before reporting; every simple command is classified on its own.
-2. **Unwrap.** Before classifying, strip `KEY=VALUE` prefixes, full paths (`/usr/local/bin/aws` becomes `aws`) and the wrappers `sudo`, `env`, `timeout`, `nohup`, `time`, `command`, `exec` and `xargs`, along with their flags.
-3. **Local shell commands.** Classify known local effects explicitly: deleting or irreversibly destroying local data (for example `rm`, `shred`, `unlink`, `rmdir`, `truncate`, `find -delete`) is DANGEROUS; other recognized local mutations (for example `cp`, `mv`, `mkdir`, `touch`, `chmod`, `tee`, and in-place edits) are LOCAL. Known read-only builtins and readers may be READ-ONLY. Do not treat an unrecognized executable or script as read-only; use UNKNOWN.
-4. **`aws` commands:**
+1. Parse. Use a real parser for the supported bash/sh syntax, keeping line and column locations. The ported DeployShield splitter is a helper for segmenting commands, not a substitute for parsing shell syntax. Parse the whole script before reporting; every simple command is classified on its own.
+2. Unwrap. Before classifying, strip `KEY=VALUE` prefixes, full paths (`/usr/local/bin/aws` becomes `aws`) and the wrappers `sudo`, `env`, `timeout`, `nohup`, `time`, `command`, `exec` and `xargs`, along with their flags.
+3. Local shell commands. Classify known local effects explicitly: deleting or irreversibly destroying local data (for example `rm`, `shred`, `unlink`, `rmdir`, `truncate`, `find -delete`) is DANGEROUS; other recognized local mutations (for example `cp`, `mv`, `mkdir`, `touch`, `chmod`, `tee`, and in-place edits) are LOCAL. Known read-only builtins and readers qualify as READ-ONLY only when their arguments preserve read-only behavior. Do not treat an unrecognized executable or script as read-only; use UNKNOWN.
+4. `aws` commands:
    - Skip global flags and their values: `--region`, `--profile`, `--output`, `--endpoint-url`, `--no-cli-pager`, `--debug` and similar.
    - Map the CLI service name to the IAM namespace with AWS's SDK-id mapping file. For example, `s3api` is `s3` and `elbv2` is `elasticloadbalancing`.
    - Turn the CLI operation into the API operation name by converting kebab case to Pascal case (`delete-objects` becomes `DeleteObjects`).
    - Look the operation up in the service file's `Operations` list. Each entry names the IAM actions it needs (`AuthorizedActions`), and each action carries `Properties` flags (`IsList`, `IsWrite`, `IsPermissionManagement`, `IsTaggingOnly`). One operation can need several actions; the worst one decides. For example, `CopyObject` needs `s3:GetObject` and `s3:PutObject`, so it is DANGEROUS. Only when the operation is missing, fall back to treating the Pascal name as the action name.
    - An action flagged write, permissions management or tagging means DANGEROUS. Otherwise the action is READ-ONLY.
    - Apply the hand tables below last; they override the lookup.
-5. **Other CLIs:** each has its own checker in a provider registry (see Prior art). A command not in any table is UNKNOWN. A provider command is not READ-ONLY merely because it is absent from a write list; each checker must have explicit read, mutation, sensitive, and unknown rules with fixtures.
-6. **Context.** Detect the AWS profile (from the flag or `AWS_PROFILE=`), kube context, terraform workspace, gcloud project, az subscription and pulumi stack, and show it as a column. Resolve context in this order: command-line flag, assignment on that command, then inherited process environment when available. Do not guess if the value is dynamic. A dangerous line against prod should stand out.
+5. Other CLIs. Each has its own checker in a provider registry (see Prior art). A command not in any table is UNKNOWN. A provider command is not READ-ONLY merely because it is absent from a write list; each checker must have explicit read, mutation, sensitive, and unknown rules with fixtures.
+6. Context. Detect the AWS profile (from the flag or `AWS_PROFILE=`), kube context, terraform workspace, gcloud project, az subscription and pulumi stack, and show it as a column. Resolve context in this order: command-line flag, assignment on that command, then inherited process environment when available. Do not guess if the value is dynamic. A dangerous line against prod should stand out.
 
 AWS data source: `https://servicereference.us-east-1.amazonaws.com/v1/service-list.json`, then one file per service, plus AWS's SDK-id mapping file. Known caveats:
 
@@ -86,7 +86,7 @@ If an action is missing from the snapshot, apply a documented hand-table or posi
 
 ## SENSITIVE list (reads existing secrets or short-lived credentials)
 
-**AWS:**
+AWS:
 
 - `secretsmanager get-secret-value`
 - `ssm get-parameter` and `ssm get-parameters` with `--with-decryption` (without the flag they are READ-ONLY)
@@ -96,7 +96,7 @@ If an action is missing from the snapshot, apply a documented hand-table or posi
 - `rds generate-db-auth-token`
 - `codeartifact get-authorization-token`
 
-**Other CLIs:**
+Other CLIs:
 
 - `vault read`, `vault kv get`
 - `kubectl get secret` with `-o yaml` or `-o json`
@@ -104,7 +104,7 @@ If an action is missing from the snapshot, apply a documented hand-table or posi
 - `gcloud auth print-access-token`
 - `az account get-access-token`
 
-**DANGEROUS, not SENSITIVE:** `iam create-access-key`, `iam create-login-profile`, `iam create-service-specific-credential`, `s3 presign`, and anything else that creates a new long-lived credential or a public link.
+DANGEROUS, not SENSITIVE: `iam create-access-key`, `iam create-login-profile`, `iam create-service-specific-credential`, `s3 presign`, and anything else that creates a new long-lived credential or a public link.
 
 ## Edge cases: shell (each one is a test fixture)
 
@@ -188,7 +188,7 @@ How it decides:
 
 ## Prior art: port, do not reinvent
 
-1. **DeployShield** (https://github.com/matanryngler/deployshield, MIT license; port with credit in a NOTICE file). One Python file, `hooks/scripts/validate-cloud-command.py`, plus tests split by area. Take:
+1. DeployShield (https://github.com/matanryngler/deployshield, MIT license; port with credit in a NOTICE file). One Python file, `hooks/scripts/validate-cloud-command.py`, plus tests split by area. Take:
    - `split_compound_command`: a state machine for `&&`, `||`, `;` and `|` that respects quotes, escapes, subshells, backticks and process substitution.
    - `extract_nested_contents` with recursion, so every nested command goes back through the whole pipeline.
    - `normalize_segment`: env prefixes, paths, and the `sudo`/`env`/`xargs` wrappers; `bash -c` checked recursively.
@@ -203,7 +203,7 @@ How it decides:
    - It fails open on bad input; ours fails closed with exit 2.
    - It has two outcomes; ours has five classes.
 
-2. **open-agent-tools `oats.tool.aws_safety`** (https://github.com/district-solutions/open-agent-tools-coder, docs at https://open-agent-tools-coder.readthedocs.io). `classify(command)` returns READ, MUTATE, AUTH or UNKNOWN for one aws command using verb sets and prefixes. Its license was not found: check it before copying any code; if there is none, reuse only its rules (facts), not its code.
+2. open-agent-tools `oats.tool.aws_safety` (https://github.com/district-solutions/open-agent-tools-coder, docs at https://open-agent-tools-coder.readthedocs.io). `classify(command)` returns READ, MUTATE, AUTH or UNKNOWN for one aws command using verb sets and prefixes. Its license was not found: check it before copying any code; if there is none, reuse only its rules (facts), not its code.
    - Use its verb rules as the fallback when an action is missing from AWS's data.
    - Port its cases as fixtures.
    - Its known misses are rows in the tables above and must pass in ours: it reads only the first verb of a chain, misses aws after `cd &&`, mistakes `--region` for the service, reads only the first command in a script, and counts secret reads as plain READ.
@@ -226,7 +226,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 2. Add CLI fixtures first: a local-only script with multiple commands, a malformed script, a credential-shaped literal that must be redacted, and empty input. Implement direct AST traversal, command positions, local classification, simple wrappers and redirects, then the shared text/JSON report and exit codes.
 3. Generate valid compound scripts from labeled command nodes and check that findings match those labels, independently of the parser. Test malformed shell, equivalent quoting and whitespace, report parity, and redaction.
 
-**Exit gate:** Goldens prove the local shell path through the real CLI, including deterministic group order and hard parse failure. AWS classifications and semantic analysis of inner scripts are not required yet; fixtures depending on those capabilities land in slices 2–4.
+Exit gate: Goldens prove the local shell path through the real CLI, including deterministic group order and hard parse failure. AWS classifications and semantic analysis of inner scripts are not required yet; fixtures depending on those capabilities land in slices 2–4.
 
 ### Slice 2: AWS data and provider classification
 
@@ -234,7 +234,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 2. Add the vendored snapshot, version metadata and validated updater. Implement AWS flags, context, the explicit overrides and fallback rules, then the non-AWS provider registry. Keep missing or ambiguous matches UNKNOWN under the lookup rules above.
 3. Add the AWS table and applicable prior-art fixtures. Generate synthetic action sets to check that action order does not change the outcome and that the worst applicable class wins. Simulate a failed update and assert that it leaves the previous snapshot unchanged.
 
-**Exit gate:** AWS CLI and provider fixtures pass, normal analysis passes offline, and the updater's atomicity is demonstrated without a live AWS account.
+Exit gate: AWS CLI and provider fixtures pass, normal analysis passes offline, and the updater's atomicity is demonstrated without a live AWS account.
 
 ### Slice 3: Nested shell and packaging
 
@@ -242,7 +242,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 2. Generate nested scripts with bounded depth and known inner commands. Check that discoveries survive nesting, positions point into the submitted script, and malformed inner input does not yield a partial report.
 3. Package the CLI as one installable command. Add the full shell golden and exercise it through the packaged entry point.
 
-**Exit gate:** The shell golden shows all five classes; shell fixtures pass except those that depend on the Python analyzer. The packaged CLI produces the same report as the development entry point.
+Exit gate: The shell golden shows all five classes; shell fixtures pass except those that depend on the Python analyzer. The packaged CLI produces the same report as the development entry point.
 
 ### Slice 4: boto3 and release checks
 
@@ -250,7 +250,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 2. Route literal inline Python and Python heredocs through the same analyzer. Add the boto3 fixtures and Python golden, and complete the deferred shell fixtures.
 3. Generate known and unresolved receiver/method cases, plus malformed Python. Check that unresolved calls never become READ-ONLY and that malformed code never yields a partial report.
 
-**Exit gate:** Both golden reports, the full fixture suite, offline analysis and the packaged CLI checks pass.
+Exit gate: Both golden reports, the full fixture suite, offline analysis and the packaged CLI checks pass.
 
 ### Close and re-groom after every slice
 
@@ -261,7 +261,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 ### Slice 1 closeout and re-groom
 
 - Passed `npm run build`, `npm run typecheck`, and `npm test` (13 tests), including real CLI text/JSON fixtures, redaction, and seeded syntax properties.
-- The legacy grammar bundle could not load with the current runtime; the approved replacement works. Direct AST traversal handled the compound syntax exercised so far, so retain ported behavior fixtures but do not add a duplicate splitter unless a demonstrated gap requires it. Keep the missing-node regression in the suite.
+- The legacy grammar bundle failed to load with the current runtime; the approved replacement works. Direct AST traversal handled the compound syntax exercised so far. Keep the ported behavior fixtures, and add a duplicate splitter only to address a demonstrated gap. Keep the missing-node regression in the suite.
 - Keep the slice order. First prove an offline `aws` CLI classification with one mapped read and one mapped write. Expose a shared operation classifier; keep raw source and rendered command separate so the provider can classify arguments without echoing them. Then add schema/metadata validation, the atomic updater, broader fixtures and provider rules. Slice 3 owns inner-source positions and richer wrappers; slice 4 can use the Python grammar already included in the replacement package.
 
 ### Slice 2 checkpoint and re-groom
@@ -289,7 +289,7 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 - Shell follow-up slice 3 classifies the outer `echo` only for fully inspected, simple literal substitutions, leaving nested findings visible and complex cases UNKNOWN. On the user-supplied 0.2.0 corpus report, 435 UNKNOWN findings became 381 READ-ONLY and 54 LOCAL relative to the preceding report; input hashes are unavailable. The 0.3.0 corpus has not yet been scanned. Next, compare its report and investigate the four shell failures using sanitized examples; broader nested and command coverage remains conservative.
 - Shell follow-up slice 4 adds constrained read-only classifications for common output-only utilities and for `sort` only when no output-file mode can apply. The 0.4.0 packaged CLI preserves `awk`/`sed` uncertainty, guards `sort -o`/`--output`, and keeps redirections visible. In the supplied 0.4.0 `opswork` report, 475 findings moved UNKNOWN→READ-ONLY and 2 moved UNKNOWN→LOCAL; 16 sort-output cases stayed UNKNOWN. Counts of dangerous findings (424) and scan errors (8) did not change from 0.3.0. The reports have no input hashes, so file identity is unverified. Next, inspect the common remaining function-call UNKNOWNs and the four shell scan failures using sanitized examples. Do not copy unknown command names into READ-ONLY without reviewing option semantics.
 - Shell follow-up slice 5 lets a function call inherit a classification only from nonempty analyzed body findings, preserving UNKNOWN for unresolved, recursive, empty, or unknown-effect bodies. It also marks arithmetic commands and expansions UNKNOWN so state mutation cannot silently produce READ-ONLY summaries. The supplied `wow-slice5.json` report has 424 dangerous, 13 sensitive, 4,511 unknown, 929 local, and 3,640 read-only findings across 2,588 files, with 8 errors. Compared with 0.4.0, 233 function-call findings moved UNKNOWN to LOCAL or READ-ONLY; arithmetic uncertainty added UNKNOWN findings, for a net reduction of 98 UNKNOWN findings. No source files from `opswork` are available in this workspace.
-- Shell follow-up slice 6 preserves a known outer command's effect independently of command/process substitutions, while keeping each inner finding visible. The guard excludes arithmetic expansion, dynamic redirects, interpreters, opaque wrappers, and read commands whose dynamic options could enable writes. Focused shell and seeded property tests cover READ-ONLY, LOCAL, DANGEROUS, and UNKNOWN inner effects. The supplied [0.6.0 report](./wow-slice6.json) has 424 dangerous, 13 sensitive, 4,179 unknown, 1,089 local, and 3,812 read-only findings across 2,588 files, with the same 8 error records as 0.5.0. At matching file/line/column/command locations, 172 UNKNOWN findings became READ-ONLY and 160 became LOCAL, with no added or removed findings; the nested-code reason count fell from 1,021 to 836. Input hashes are absent, so source identity is not proven. Re-groom from the remaining largest UNKNOWN reasons: unsupported commands (1,177), nested code (836), shell constructs (792), and unknown client types (575); arithmetic expansions now account for 105.
+- Shell follow-up slice 6 preserves a known outer command's effect independently of command/process substitutions, while keeping each inner finding visible. The guard excludes arithmetic expansion, dynamic redirects, interpreters, opaque wrappers, and read commands with dynamic options that are not proven read-only. Focused shell and seeded property tests cover READ-ONLY, LOCAL, DANGEROUS, and UNKNOWN inner effects. The supplied [0.6.0 report](./wow-slice6.json) has 424 dangerous, 13 sensitive, 4,179 unknown, 1,089 local, and 3,812 read-only findings across 2,588 files, with the same 8 error records as 0.5.0. At matching file/line/column/command locations, 172 UNKNOWN findings became READ-ONLY and 160 became LOCAL, with no added or removed findings; the nested-code reason count fell from 1,021 to 836. Input hashes are absent, so source identity is not proven. Re-groom from the remaining largest UNKNOWN reasons: unsupported commands (1,177), nested code (836), shell constructs (792), and unknown client types (575); arithmetic expansions now account for 105.
 - Python-only re-groom from `wow-slice6.json`: the 2,490 `.py` reports are identical between 0.5.0 and 0.6.0. They contain 584 UNKNOWN findings, 575 for unresolved client type across 211 files; four Python files also have syntax errors. Treat client-type resolution as the next broad Python workstream, with conservative branch/function-flow boundaries and seeded properties. Keep the four parse failures separate; request sanitized excerpts only if investigating those.
 - Python follow-up slice 7 (0.7.0) adds safe provenance labels to `client type not known` findings (untyped parameter, unsupported annotation, untracked import, unresolved assignment, function/class binding, or control-flow merge). It does not infer a client type or change a finding class. The full proof passed 81 tests; the packaged 0.7.0 CLI was built. The supplied `wow-slice7.json` splits the 575 prior client-type UNKNOWNs into 308 untyped parameters, 204 unresolved assignments, 50 untracked imports, 6 control-flow merges, 4 unsupported annotations, and 3 function/class bindings. The scan includes one added Python file (9 unresolved-assignment and 1 untyped-parameter UNKNOWN); all common-file Python class counts are unchanged. The largest candidates are untyped parameters and unresolved assignments, but the report omits the enclosing code and call sites. Before changing inference, get sanitized representative snippets for both patterns, including imports, definitions, assignments, and direct callers. No source values or arguments should be shared.
 - Python follow-up slice 8 (0.8.0) resolves `boto3.Session` and aliased Session parameter annotations through existing module bindings; it does not guess from method names. On the user-provided Inspector SBOM script, UNKNOWN fell from 10 to 1. Five calls became DANGEROUS, three READ-ONLY, and one LOCAL; the analyzer also surfaced a read-only paginator operation and a local download. The remaining UNKNOWN is an untyped parameter in a public helper, kept conservatively. The full proof passed 83 tests and the 0.8.0 package was built. The supplied `wow-slice-ebs.json` is a separate 73-file scan: its 66 Python files have 106 findings and 22 UNKNOWNs, all with client-provenance reasons (13 untyped parameters, 8 unresolved assignments, 1 untracked import). It has no matching earlier report or input hashes, so it is a snapshot rather than a measured before/after.
@@ -299,11 +299,11 @@ Implement one slice at a time. Detail the current slice before starting it; trea
 
 Use a TypeScript-compatible property-testing library such as `fast-check`. Group tests in a `TestProperties` suite and name the domain, type and failure caught in a `Catches:` comment. Use bounded generators, log the seed and replay path on failure, and preserve minimized bugs as named regression fixtures.
 
-- **Integrity (SAFETY):** valid compound input does not lose or invent findings; deliberately malformed input never crashes or emits a partial report and exits 2.
-- **Determinism (INVARIANT):** equivalent quoting, harmless whitespace and classification-neutral wrappers preserve the expected class. Repeated analysis with identical input, environment and snapshot yields identical output.
-- **Ordering (SAFETY):** findings are grouped by class and ordered by source position within each group. Adding a command does not hide existing findings; derive the expected exit code from the complete set of classes, using the exit-code table rather than numeric severity.
-- **Confidentiality (SAFETY):** generated synthetic credential values never appear in stdout or stderr in either output mode. Text and JSON report the same redacted findings.
-- **Atomicity (SAFETY):** a failed data refresh leaves the previous snapshot intact.
+- Integrity (SAFETY): valid compound input does not lose or invent findings; deliberately malformed input never crashes or emits a partial report and exits 2.
+- Determinism (INVARIANT): equivalent quoting, harmless whitespace and classification-neutral wrappers preserve the expected class. Repeated analysis with identical input, environment and snapshot yields identical output.
+- Ordering (SAFETY): findings are grouped by class and ordered by source position within each group. Adding a command does not hide existing findings; derive the expected exit code from the complete set of classes, using the exit-code table rather than numeric severity.
+- Confidentiality (SAFETY): generated synthetic credential values never appear in stdout or stderr in either output mode. Text and JSON report the same redacted findings.
+- Atomicity (SAFETY): a failed data refresh leaves the previous snapshot intact.
 
 Keep goldens and acceptance tests on the real CLI. Run high-volume properties against the relevant component and exercise the CLI boundary with a smaller, representative generated set. Property tests supplement, not replace, the edge-case tables and goldens.
 
@@ -340,7 +340,7 @@ Make this the final release gate, not a demo. Produce a reviewer-facing report a
 
 | What the reviewer should believe | Evidence required |
 |---|---|
-| It finds the right commands and gives the right results. | Map every shell, AWS and boto3 edge-case row and every supported provider to named tests. Run independent, hand-labeled goldens for shell, standalone Python and embedded Python. Assert classes, reasons, source locations, order, summary, JSON schema, stdout/stderr and exit status; report mismatches by class, with **any false READ-ONLY in the labeled corpus failing the gate**. |
+| It finds the right commands and gives the right results. | Map every shell, AWS and boto3 edge-case row and every supported provider to named tests. Run independent, hand-labeled goldens for shell, standalone Python and embedded Python. Assert classes, reasons, source locations, order, summary, JSON schema, stdout/stderr and exit status; report mismatches by class, with any false `READ-ONLY` in the labeled corpus failing the gate. |
 | It survives combinations people did not handwrite. | Use seeded `fast-check` suites for mixed command chains, nesting, quoting, wrappers, malformed input, IAM action permutations, SDK resolution and redaction. Require at least 1,000 successful generated cases per core component property in the release run and a bounded representative set through the real CLI. Record run counts, seeds and replay paths for failures; check in minimized counterexamples as regression fixtures. Derive expected results from generator labels or hand-written rules, not from the implementation under test. |
 | Analysis has no side effects and uncertainty stays visible. | Run the packaged CLI with network, subprocess execution and input writes denied by the test environment. Analyze synthetic scripts that would create a marker file or invoke an executable if run; assert neither happens and the inputs remain unchanged. Assert that unsupported or dynamic behavior is not reported as READ-ONLY and that malformed shell and Python exit 2 with empty stdout in both formats. |
 | Reports don't leak the synthetic secrets they are designed to mask. | Put unique canaries into the documented credential forms, including nested or malformed inputs. Assert absence from stdout and stderr in text and JSON, and scan stored evidence for the same canaries. Use synthetic data only; never execute the fixture commands or access a real AWS account. |
