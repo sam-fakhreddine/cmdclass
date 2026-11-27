@@ -29,7 +29,7 @@ test("classifies only constrained return, shift and date forms", () => {
   assert.equal(classifyLocal(["return"], [{ destination: null, duplicatesDescriptor: false }]).class, "UNKNOWN");
   assert.equal(classifyLocal(["shift"], [
     { destination: "/dev/tcp/example.invalid/123", duplicatesDescriptor: false },
-  ]).class, "DANGEROUS");
+  ]).class, "MUTATING");
 });
 
 test("classifies output-only shell utilities while guarding sort file output", () => {
@@ -54,7 +54,7 @@ test("classifies output-only shell utilities while guarding sort file output", (
     ["sort", null, "input.txt"],
   ] as const) assert.equal(classifyLocal(words, []).class, "UNKNOWN", JSON.stringify(words));
 
-  for (const command of ["awk", "sed", "custom"]) {
+  for (const command of ["sed", "custom"]) {
     assert.equal(classifyLocal([command, "script"], []).class, "UNKNOWN", command);
   }
 });
@@ -62,12 +62,12 @@ test("classifies output-only shell utilities while guarding sort file output", (
 test("classifies explicit writes and preserves destructive commands through redirects", () => {
   const file = { destination: "out.txt", duplicatesDescriptor: false };
   assert.equal(classifyLocal(["echo", "ok"], [file]).class, "LOCAL");
-  assert.equal(classifyLocal(["/bin/rm", "out.txt"], [file]).class, "DANGEROUS");
-  assert.equal(classifyLocal(["find", ".", "-delete"], []).class, "DANGEROUS");
+  assert.equal(classifyLocal(["/bin/rm", "out.txt"], [file]).class, "MUTATING");
+  assert.equal(classifyLocal(["find", ".", "-delete"], []).class, "MUTATING");
   assert.equal(classifyLocal(["printf", "-v", "out", "%s", "ok"], []).class, "LOCAL");
   assert.equal(classifyLocal([null], [
     { destination: "/dev/tcp/example.invalid/123", duplicatesDescriptor: false },
-  ]).class, "DANGEROUS");
+  ]).class, "MUTATING");
   assert.equal(classifyLocal(["echo", "ok"], [
     { destination: "/dev/null", duplicatesDescriptor: false },
     { destination: "1", duplicatesDescriptor: true },

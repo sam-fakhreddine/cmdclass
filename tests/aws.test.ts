@@ -23,20 +23,20 @@ test("provider rules distinguish context, sensitive output, mutations and unknow
     "git example",
   ].join("\n"));
   assert.deepEqual(findings.map(({ class: classification }) => classification),
-    ["LOCAL", "SENSITIVE", "UNKNOWN", "SENSITIVE", "SENSITIVE", "DANGEROUS", "UNKNOWN", "UNKNOWN"]);
+    ["LOCAL", "SENSITIVE", "UNKNOWN", "SENSITIVE", "SENSITIVE", "MUTATING", "UNKNOWN", "UNKNOWN"]);
   assert.deepEqual(findings[0].context, { kube_context: "example" });
 });
 
 test("registered providers and aliases have independently labeled representative cases", async () => {
   const rows = [
     ["helm list", "READ-ONLY"], ["terraform workspace select example", "LOCAL"],
-    ["pulumi destroy --stack example", "DANGEROUS"], ["gcloud compute instances list", "READ-ONLY"],
-    ["az account get-access-token", "SENSITIVE"], ["vault kv put example key=value", "DANGEROUS"],
-    ["gh auth token", "SENSITIVE"], ["docker push example.invalid/image", "DANGEROUS"],
+    ["pulumi destroy --stack example", "MUTATING"], ["gcloud compute instances list", "READ-ONLY"],
+    ["az account get-access-token", "SENSITIVE"], ["vault kv put example key=value", "MUTATING"],
+    ["gh auth token", "SENSITIVE"], ["docker push example.invalid/image", "MUTATING"],
     ["podman ps", "READ-ONLY"], ["cdk synth", "LOCAL"], ["sam build", "LOCAL"],
-    ["serverless deploy", "DANGEROUS"], ["sls remove", "DANGEROUS"],
-    ["ansible-playbook example.yml", "DANGEROUS"], ["npm view example", "READ-ONLY"],
-    ["yarn install", "UNKNOWN"], ["pnpm publish", "DANGEROUS"], ["twine upload example", "DANGEROUS"],
+    ["serverless deploy", "MUTATING"], ["sls remove", "MUTATING"],
+    ["ansible-playbook example.yml", "MUTATING"], ["npm view example", "READ-ONLY"],
+    ["yarn install", "UNKNOWN"], ["pnpm publish", "MUTATING"], ["twine upload example", "MUTATING"],
     ["gem install example", "LOCAL"], ["cargo check", "LOCAL"], ["psql -X -c 'SELECT 1'", "READ-ONLY"],
     ["mysql --no-defaults -e 'SELECT 1'", "READ-ONLY"], ["mongosh --eval '1'", "UNKNOWN"],
     ["mongo --eval '1'", "UNKNOWN"], ["redis-cli GET example", "UNKNOWN"],
@@ -80,7 +80,7 @@ test("database rules distinguish isolated reads, mutations, and ambiguous SQL wi
     "redis-cli -h example.invalid DEL example",
   ].join("\n"));
   assert.deepEqual(findings.map(({ class: classification }) => classification),
-    ["READ-ONLY", "UNKNOWN", "UNKNOWN", "UNKNOWN", "DANGEROUS", "READ-ONLY", "DANGEROUS", "UNKNOWN"]);
+    ["READ-ONLY", "UNKNOWN", "UNKNOWN", "UNKNOWN", "MUTATING", "READ-ONLY", "MUTATING", "UNKNOWN"]);
   assert.ok(findings.every(({ command }) => command === "<shell text omitted>"));
 });
 
@@ -91,10 +91,52 @@ test("CLI classifies mapped AWS calls and applies credential and profile overrid
   assert.equal(result.status, 1, result.stderr);
   const { entries } = JSON.parse(result.stdout);
   assert.deepEqual(entries.map((x: { line: number; class: string }) => [x.line, x.class]),
-    [[3, "DANGEROUS"], [5, "DANGEROUS"], [4, "SENSITIVE"], [6, "UNKNOWN"], [2, "READ-ONLY"]]);
+    [[3, "MUTATING"], [5, "MUTATING"], [4, "SENSITIVE"], [6, "UNKNOWN"], [2, "READ-ONLY"]]);
   assert.equal(entries[0].context.profile, "example");
   assert.match(entries[1].reason, /--dry-run present/);
   assert.match(entries[3].reason, /not in AWS data snapshot \d{4}-\d\d-\d\d/);
+});
+
+test("permissions mode reports shell and Python candidates and retains scan uncertainty", async () => {
+  const dir = await mkdtemp(resolve(".cmdclass-permissions-"));
+  const shell = join(dir, "calls.sh");
+  const python = join(dir, "calls.py");
+  const invalid = join(dir, "invalid.py");
+  try {
+    await writeFile(shell, "aws ec2 describe-instances\naws s3 cp ./file s3://example/file\n");
+    await writeFile(python, [
+      "import boto3",
+      "import subprocess",
+      'boto3.client("s3").get_object(Bucket="example", Key="file")',
+      'subprocess.run(["aws", "ec2", "describe-instances"])',
+      "",
+    ].join("\n"));
+    await writeFile(invalid, "def broken(\n");
+    const run = (...args: string[]) => spawnSync(process.execPath, ["src/cli.ts", ...args], { encoding: "utf8" });
+    const result = run("--permissions", "--json", dir);
+    assert.equal(result.status, 2, result.stderr);
+    const report = JSON.parse(result.stdout);
+    const actions = report.actions.map((entry: { action: string }) => entry.action);
+    assert.ok(actions.includes("ec2:DescribeInstances"));
+    assert.ok(actions.includes("s3:GetObject"));
+    assert.ok(actions.includes("s3:GetObjectVersion"));
+    assert.equal(report.resources, "UNKNOWN");
+    assert.ok(report.unknown.some((entry: { path: string }) => entry.path === "invalid.py"));
+    assert.ok(report.unknown.some((entry: { path: string }) => entry.path === "calls.sh"));
+    assert.ok(report.unknown.some((entry: { path: string }) => entry.path === "calls.py"));
+    const text = run("--permissions", shell);
+    assert.match(text.stdout, /ec2:DescribeInstances/);
+    assert.match(text.stdout, /resources: UNKNOWN/);
+    assert.match(text.stdout, /not a proven minimum/);
+    const regular = run("--json", shell);
+    assert.ok(Array.isArray(JSON.parse(regular.stdout).entries));
+    assert.equal(JSON.parse(regular.stdout).actions, undefined);
+  } finally {
+    await unlink(shell);
+    await unlink(python);
+    await unlink(invalid);
+    await rmdir(dir);
+  }
 });
 
 test("AWS aliases, high-level operations, custom CLI commands and overrides", async () => {
@@ -102,25 +144,25 @@ test("AWS aliases, high-level operations, custom CLI commands and overrides", as
     ["aws elbv2 describe-load-balancers", "READ-ONLY"],
     ["aws configservice describe-configuration-recorders", "READ-ONLY"],
     ["aws s3 ls", "READ-ONLY"],
-    ["aws s3 cp ./artifact s3://example/artifact", "DANGEROUS"],
+    ["aws s3 cp ./artifact s3://example/artifact", "MUTATING"],
     ["aws s3 cp s3://example/artifact ./download", "LOCAL"],
-    ["aws s3 sync ./artifact s3://example/artifact", "DANGEROUS"],
+    ["aws s3 sync ./artifact s3://example/artifact", "MUTATING"],
     ["aws s3 sync s3://example ./downloads", "LOCAL"],
     ["aws s3 cp $SRC $DEST", "UNKNOWN"],
-    ["aws s3 mv s3://example/a ./download", "DANGEROUS"],
-    ["aws s3 rb s3://example", "DANGEROUS"],
-    ["aws s3 mb s3://example", "DANGEROUS"],
-    ["aws s3 website s3://example", "DANGEROUS"],
-    ["aws s3 presign s3://example/artifact", "DANGEROUS"],
+    ["aws s3 mv s3://example/a ./download", "MUTATING"],
+    ["aws s3 rb s3://example", "MUTATING"],
+    ["aws s3 mb s3://example", "MUTATING"],
+    ["aws s3 website s3://example", "MUTATING"],
+    ["aws s3 presign s3://example/artifact", "MUTATING"],
     ["aws sso login", "LOCAL"],
     ["aws configure set region us-east-1", "LOCAL"],
     ["aws configure list", "READ-ONLY"],
     ["aws eks update-kubeconfig --name example", "LOCAL"],
-    ["aws iam create-access-key --user-name example", "DANGEROUS"],
-    ["aws cloudformation deploy", "DANGEROUS"],
-    ["aws cloudformation package", "DANGEROUS"],
+    ["aws iam create-access-key --user-name example", "MUTATING"],
+    ["aws cloudformation deploy", "MUTATING"],
+    ["aws cloudformation package", "MUTATING"],
     ["aws logs tail example", "READ-ONLY"],
-    ["aws ssm start-session", "DANGEROUS"],
+    ["aws ssm start-session", "MUTATING"],
     ["aws ssm get-parameter --name example", "READ-ONLY"],
     ["aws ssm get-parameter --name example --with-decryption", "SENSITIVE"],
     ["aws ec2 wait instance-running", "READ-ONLY"],
@@ -204,7 +246,7 @@ test("SDK mappings resolve new CLI service names without adding IAM aliases", ()
     },
   };
   assert.equal(classifyCliOperation(snapshot, "sdk-name", "list-things").class, "READ-ONLY");
-  assert.equal(classifyCliOperation(snapshot, "sdk-name", "delete-thing").class, "DANGEROUS");
+  assert.equal(classifyCliOperation(snapshot, "sdk-name", "delete-thing").class, "MUTATING");
   assert.equal(classifyCliOperation(snapshot, "shared", "list-things").class, "READ-ONLY");
   assert.equal(classifyCliOperation(snapshot, "shared", "delete-thing").class, "UNKNOWN");
 });
@@ -253,7 +295,7 @@ test("the CLI and SDK classify access-issuing operations by effect, not IAM read
   ]);
   for (const entries of [shell, python]) {
     assert.deepEqual(entries.map(({ class: classification }) => classification),
-      ["DANGEROUS", "DANGEROUS", "SENSITIVE", "READ-ONLY"]);
+      ["MUTATING", "MUTATING", "SENSITIVE", "READ-ONLY"]);
     assert.deepEqual(entries.slice(0, 3).map(({ source }) => source), Array(3).fill("AWS operation override"));
   }
 });
@@ -274,7 +316,7 @@ test("AWS operation classification is independent of action order and preserves 
       const first = classifyOperation(snapshot, "svc", "Operation");
       keys.reverse();
       assert.deepEqual(classifyOperation(snapshot, "svc", "Operation"), first);
-      assert.equal(first.class, levels.some((l) => l && l !== "Read") ? "DANGEROUS" :
+      assert.equal(first.class, levels.some((l) => l && l !== "Read") ? "MUTATING" :
         levels.includes(null) ? "UNKNOWN" : "READ-ONLY");
     },
   ), propertyOptions);

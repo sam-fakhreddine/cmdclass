@@ -1,5 +1,18 @@
-export const classes = ["DANGEROUS", "SENSITIVE", "UNKNOWN", "LOCAL", "READ-ONLY"] as const;
+export const classes = ["MUTATING", "SENSITIVE", "UNKNOWN", "LOCAL", "READ-ONLY"] as const;
 export type Classification = typeof classes[number];
+
+export const awsPermissions = Symbol("awsPermissions");
+export interface AwsPermissions {
+  actions: string[];
+  unknown?: string;
+}
+
+/**
+ * Why an UNKNOWN could not be settled. EXTERNAL CALL: it depends on code or values outside the
+ * file (a caller, a module that was not followed, a launched program). INLINE: everything is in
+ * the file but is only known at runtime. Absent when neither applies, such as a snapshot gap.
+ */
+export type UnknownKind = "INLINE" | "EXTERNAL CALL";
 
 export interface Finding {
   line: number;
@@ -9,11 +22,13 @@ export interface Finding {
   reason: string;
   source: string;
   context?: Readonly<Record<string, string>>;
+  unknown_kind?: UnknownKind;
+  [awsPermissions]?: AwsPermissions;
 }
 
 export function emptySummary(): Record<Classification, number> {
   return {
-    DANGEROUS: 0,
+    MUTATING: 0,
     SENSITIVE: 0,
     UNKNOWN: 0,
     LOCAL: 0,
@@ -27,13 +42,13 @@ export function buildReport(findings: readonly Finding[]) {
     a.line - b.line || a.column - b.column);
   const summary = emptySummary();
   for (const entry of entries) summary[entry.class]++;
-  return { schema_version: 1 as const, entries, summary };
+  return { schema_version: 2 as const, entries, summary };
 }
 
 export type Report = ReturnType<typeof buildReport>;
 
 export function reportExitCode({ summary }: Pick<Report, "summary">): 0 | 1 | 3 {
-  if (summary.DANGEROUS || summary.UNKNOWN || summary.LOCAL) return 1;
+  if (summary.MUTATING || summary.UNKNOWN || summary.LOCAL) return 1;
   return summary.SENSITIVE ? 3 : 0;
 }
 
@@ -57,7 +72,7 @@ export function formatReport(report: Report, json: boolean): string {
     const context = Object.entries(entry.context ?? {})
       .map(([key, value]) => `${key}: ${value}`).join(", ");
     return oneLine(`${entry.class.padEnd(10)} ${entry.line}:${entry.column}  ${
-      entry.command}  ${entry.reason}${context ? `  ${context}` : ""}`);
+      entry.command}  ${entry.unknown_kind ? `${entry.unknown_kind}: ` : ""}${entry.reason}${context ? `  ${context}` : ""}`);
   });
   lines.push(formatSummary(report.summary));
   return `${lines.join("\n")}\n`;

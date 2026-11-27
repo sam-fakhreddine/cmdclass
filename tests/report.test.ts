@@ -12,16 +12,16 @@ function finding(line: number, column: number, name: string, classification: Cla
 test("formats one report, grouped by severity, with stable source ordering", () => {
   const report = buildReport([
     finding(1, 1, "echo ok", "READ-ONLY"),
-    finding(2, 7, "rm later", "DANGEROUS"),
-    finding(2, 1, "rm first", "DANGEROUS"),
-    finding(2, 1, "rm inner", "DANGEROUS"),
+    finding(2, 7, "rm later", "MUTATING"),
+    finding(2, 1, "rm first", "MUTATING"),
+    finding(2, 1, "rm inner", "MUTATING"),
   ]);
   assert.equal(formatReport(report, false), [
-    "DANGEROUS  2:1  rm first  fixture",
-    "DANGEROUS  2:1  rm inner  fixture",
-    "DANGEROUS  2:7  rm later  fixture",
+    "MUTATING   2:1  rm first  fixture",
+    "MUTATING   2:1  rm inner  fixture",
+    "MUTATING   2:7  rm later  fixture",
     "READ-ONLY  1:1  echo ok  fixture",
-    "summary: 1 read-only, 0 local, 0 unknown, 0 sensitive, 3 dangerous",
+    "summary: 1 read-only, 0 local, 0 unknown, 0 sensitive, 3 mutating",
     "",
   ].join("\n"));
   assert.deepEqual(JSON.parse(formatReport(report, true)), report);
@@ -36,7 +36,7 @@ describe("TestProperties", () => {
   // Catches: Determinism (INVARIANT) - the input order changes findings at distinct positions.
   test("order is independent of collection order at distinct positions", () => {
     fc.assert(fc.property(
-      fc.array(fc.constantFrom<Classification>("READ-ONLY", "LOCAL", "UNKNOWN", "SENSITIVE", "DANGEROUS"),
+      fc.array(fc.constantFrom<Classification>("READ-ONLY", "LOCAL", "UNKNOWN", "SENSITIVE", "MUTATING"),
         { maxLength: 40 }),
       (states) => {
         const findings = states.map((classification, index) =>
@@ -52,7 +52,7 @@ describe("TestProperties", () => {
   // Catches: Integrity (SAFETY) - a finding mix yields the wrong exit code.
   test("computes exit codes for all subsets of the five classes", () => {
     const example: [Classification, number][] = [
-      ["READ-ONLY", 0], ["LOCAL", 1], ["UNKNOWN", 1], ["SENSITIVE", 3], ["DANGEROUS", 1],
+      ["READ-ONLY", 0], ["LOCAL", 1], ["UNKNOWN", 1], ["SENSITIVE", 3], ["MUTATING", 1],
     ];
     for (let mask = 0; mask < 2 ** example.length; mask++) {
       const selected = example.filter((_, index) => mask & (1 << index));

@@ -3,10 +3,11 @@ import { classifyAws } from "./aws/cli.ts";
 import { classifyLocal, isNestedReadOnlyCommand } from "./local.ts";
 import { classifyProvider } from "./providers.ts";
 import { isDatabaseProvider } from "./provider/database.ts";
-import { classes } from "./report.ts";
+import { awsPermissions, classes } from "./report.ts";
 import { redactCommand } from "./redact.ts";
 import type { Finding } from "./report.ts";
 import { commandAssignments, inlineBody, originalPosition, staticPrefix } from "./shell/source.ts";
+import { scanAwsText } from "./shell/text-scan.ts";
 import { unwrap } from "./shell/wrappers.ts";
 import { InputError, withSyntax } from "./syntax.ts";
 import { analyzePython } from "./python.ts";
@@ -19,8 +20,9 @@ const traversable = new Set([
   "subshell", "negated_command",
 ]);
 
+/** The node runs a command of its own: a command or process substitution somewhere inside it. */
 function pendingNested(node: Node): boolean {
-  return ["command_substitution", "process_substitution", "arithmetic_expansion"].includes(node.type) ||
+  return ["command_substitution", "process_substitution"].includes(node.type) ||
     node.namedChildren.some(pendingNested);
 }
 
@@ -28,6 +30,13 @@ function containsArithmeticExpansion(node: Node): boolean {
   return node.type === "arithmetic_expansion" || node.namedChildren.some(containsArithmeticExpansion);
 }
 
+type ConstructEffect = Pick<Finding, "class" | "reason">;
+const declarationEffect: ConstructEffect = { class: "LOCAL", reason: "declares a shell variable" };
+const unsetEffect: ConstructEffect = { class: "LOCAL", reason: "unsets a shell variable" };
+// Arithmetic can assign shell variables. The contents of the variables it reads are not inspected.
+const arithmeticEffect: ConstructEffect = { class: "LOCAL", reason: "evaluates shell arithmetic" };
+const wrappedAwsNote = "passed as arguments to another command";
+const inlinePythonReason = "inline Python is analysed only for AWS calls and process launches";
 const maxInlineDepth = 12;
 const remoteInputs = new Set(["curl", "wget"]);
 const findActions = new Set(["-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"]);
@@ -39,6 +48,8 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
   return withSyntax("bash", source, async (root) => {
       const findings: Promise<Finding[]>[] = [];
       const functions = new Map<string, Promise<Finding[]>[] | null>();
+      // Source ranges of AWS commands and inline scripts the walk has analysed; the text scan skips them.
+      const analysed: [number, number][] = [];
       function visitSubstitutions(node: Node) {
         if (node.type === "command_substitution" || node.type === "process_substitution") {
           for (const child of node.namedChildren) visit(child);
@@ -67,7 +78,7 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
                 remoteInputs.has(executableOf(children[index - 1]))) {
               findings.push(Promise.resolve([{
                 line: child.startPosition.row + 1, column: child.startPosition.column + 1,
-                command: executableOf(child), class: "DANGEROUS", reason: "runs downloaded code", source: "shell pipeline",
+                command: executableOf(child), class: "MUTATING", reason: "runs downloaded code", source: "shell pipeline",
               }]));
             } else visit(child, index === children.length - 1 ? redirections : []);
           }
@@ -76,10 +87,10 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
             !["file_redirect", "heredoc_redirect", "herestring_redirect", "comment"].includes(child.type));
           record(node, words, [...node.childrenForFieldName("redirect"), ...redirections]);
         } else if (node.type === "test_command") {
-          const unsupported = node.text.trimStart().startsWith("((")
-            ? "arithmetic command is not analysed"
-            : pendingNested(node) ? "nested code is not yet analysed" : undefined;
-          record(node, [], redirections, unsupported);
+          const arithmetic = node.text.trimStart().startsWith("((");
+          const unsupported = !arithmetic && pendingNested(node) ? "nested code is not yet analysed" : undefined;
+          record(node, [], redirections, unsupported,
+            arithmetic || containsArithmeticExpansion(node) ? arithmeticEffect : undefined);
           visitSubstitutions(node);
         } else if (node.type === "variable_assignment") {
           record(node, [node], redirections);
@@ -96,12 +107,18 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
           visit(body);
           functions.set(name, previous ? null : findings.slice(start));
         } else if (["declaration_command", "unset_command"].includes(node.type)) {
-          record(node, [], redirections, "shell construct is not yet analysed");
+          record(node, [], redirections, undefined, node.type === "unset_command" ? unsetEffect : declarationEffect);
           visitSubstitutions(node);
+        } else {
+          // Any other construct can still hold commands (a C-style loop header and body, the word
+          // list of a for or case, several assignments on one line), so always look inside it.
+          if (node.type === "c_style_for_statement") record(node, [], redirections, undefined, arithmeticEffect);
+          for (const child of node.namedChildren) visit(child);
         }
       }
 
-      function record(node: Node, words: Node[], redirects: Node[], unsupported?: string) {
+      /** `construct` is the effect of a statement that is not a command, such as a declaration. */
+      function record(node: Node, words: Node[], redirects: Node[], unsupported?: string, construct?: ConstructEffect) {
         const parts = words.map(staticPrefix);
         const commandWords = words.filter((word) => word.type !== "variable_assignment");
         const args = parts.filter((_, index) => words[index].type !== "variable_assignment")
@@ -135,7 +152,7 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
         const body = depth < maxInlineDepth && !unsupported && outer !== "find" && outer !== "parallel"
           ? inlineBody(commandWords.slice(args.length - command.length), redirects, executable) : undefined;
         const substitutions = [...words, ...redirects].filter(pendingNested);
-        const arithmeticExpansion = substitutions.some(containsArithmeticExpansion);
+        const arithmetic = [...words, ...redirects].some(containsArithmeticExpansion);
         const interpreter = executable !== undefined && ["sh", "bash", "python", "python3"].includes(executable);
         const otherInline = executable === "node" && command[1] === "-e";
         const externalScript = interpreter && command[1] !== undefined && command[1] !== null &&
@@ -155,11 +172,16 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
         const redactable = words.map((word, index) => ({
           start: word.startIndex - node.startIndex, end: word.endIndex - node.startIndex, prefix: parts[index].prefix,
         }));
-        const omit = nested || !!unsupported || isDatabaseProvider(executable) || (words.length === 0 &&
+        const omit = nested || !!unsupported || construct !== undefined || isDatabaseProvider(executable) || (words.length === 0 &&
           (node.type === "test_command" || node.childForFieldName("body") !== null)) ||
           redirects.some((r) => /[a-z][a-z0-9+.-]*:\/\/[^/?#@\s]+@/i.test(r.text));
         const rendered = omit ? "<shell text omitted>" : redactCommand(raw, redactable);
         const location = { line: node.startPosition.row + 1, column: node.startPosition.column + 1 };
+        // Text that is only printed to the terminal is not a command waiting to run.
+        const onlyPrints = (executable === "echo" || executable === "printf") && !output.length &&
+          node.parent?.type !== "pipeline";
+        if (executable === "aws" || onlyPrints) analysed.push([node.startIndex, displayEnd]);
+        if (body) analysed.push([body.offset, body.offset + body.text.length]);
         const provider = classifyProvider(executable, command.slice(1), assignments);
         const local = classifyLocal(executable === "aws" || provider || functionBinding !== undefined ? [] : command, output);
         const profile = assignments.get("AWS_PROFILE");
@@ -168,6 +190,13 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
             try {
               const inner = body.language === "python"
                 ? await analyzePython(body.text) : await analyzeShellSource(body.text, depth + 1);
+              if (body.language === "python" && !inner.length) {
+                // Python is analysed for AWS calls and process launches only; say so rather than report nothing.
+                return [{
+                  ...location, command: "<shell text omitted>", class: "UNKNOWN", reason: inlinePythonReason,
+                  source: "shell", unknown_kind: "INLINE",
+                }];
+              }
               if (!output.length) return inner.map((entry) => ({
                 ...entry, ...originalPosition(source, body.offset, entry.line, entry.column),
               }));
@@ -181,7 +210,7 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
               throw new InputError(error.message, position.line, position.column);
             }
           }
-          let effect: Pick<Finding, "class" | "reason" | "source" | "context">;
+          let effect: Pick<Finding, "class" | "reason" | "source" | "context" | typeof awsPermissions>;
           if (functionBinding !== undefined) {
             const body = functionBinding && (await Promise.all(functionBinding)).flat();
             const severity = body?.length ? body.reduce<number>((worst, entry) =>
@@ -191,23 +220,47 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
           } else {
             effect = executable === "aws" ? await classifyAws(command, profile) : provider ?? { ...local, source: "shell" };
           }
-          if (classes.indexOf(local.class) < classes.indexOf(effect.class)) effect = { ...effect, ...local, source: "shell" };
-          const nestedEffectIsModeled = !unsupported && substitutions.length > 0 && !arithmeticExpansion &&
+          const remote = functionBinding === undefined && (executable === "aws" || provider !== undefined);
+          if (classes.indexOf(local.class) < classes.indexOf(effect.class)) {
+            // A redirect outranks a remote read, but the report must still say which remote call it is.
+            effect = remote ? { ...effect, class: local.class, reason: `${effect.reason}; ${local.reason}` }
+              : { ...effect, ...local, source: "shell" };
+          }
+          const embeddedAws = effect.class === "UNKNOWN" && !remote
+            ? command.findIndex((word, index) => index > 0 && word === "aws") : -1;
+          if (embeddedAws > 0) {
+            analysed.push([node.startIndex, displayEnd]);
+            // `retry 3 aws ...`: the wrapper is unknown, but the command it is handed is not.
+            const inner = await classifyAws(command.slice(embeddedAws), profile);
+            effect = inner.class === "MUTATING" || inner.class === "SENSITIVE"
+              ? { ...inner, reason: `${inner.reason}; ${wrappedAwsNote}` }
+              : { ...effect, [awsPermissions]: inner[awsPermissions] };
+          }
+          const localCommand = effect.source === "shell" && effect.class === "READ-ONLY";
+          if (localCommand && construct) effect = { ...construct, source: "shell" };
+          else if (localCommand && node.type === "variable_assignment") {
+            effect = { class: "LOCAL", reason: "sets a shell variable", source: "shell" };
+          } else if (localCommand && arithmetic) effect = { ...arithmeticEffect, source: "shell" };
+          const nestedEffectIsModeled = !unsupported && substitutions.length > 0 &&
             !interpreter && executable !== "eval" && !otherInline &&
             redirects.every((redirect) => redirect.type === "file_redirect") && effect.source === "shell" &&
             (effect.class === "LOCAL" ||
               (effect.class === "READ-ONLY" && isNestedReadOnlyCommand(executable)));
-          if (effect.class !== "DANGEROUS" && effect.class !== "SENSITIVE") {
+          if (effect.class !== "MUTATING" && effect.class !== "SENSITIVE") {
             if (unsupported || (nested && !nestedEffectIsModeled)) effect = {
               class: "UNKNOWN",
               reason: unsupported ?? (externalScript ? "runs another file" :
-                otherInline ? "inline code not analysed" :
-                  arithmeticExpansion ? "arithmetic expansion is not analysed" : "nested code is not yet analysed"),
+                otherInline ? "inline code not analysed" : "nested code is not yet analysed"),
               source: "shell",
+              [awsPermissions]: effect[awsPermissions],
             };
-            else if (node.type === "variable_assignment" && effect.class === "READ-ONLY") {
-              effect = { class: "LOCAL", reason: "sets a shell variable", source: "shell" };
-            }
+          }
+          if ((unsupported || nested) && effect[awsPermissions]) {
+            effect = { ...effect, [awsPermissions]: {
+              ...effect[awsPermissions],
+              unknown: [effect[awsPermissions].unknown, "nested or dynamic command behavior is not fully analyzed"]
+                .filter(Boolean).join("; "),
+            } };
           }
           return [{ ...location, command: rendered, ...effect }];
         })());
@@ -215,6 +268,7 @@ async function analyzeShellSource(source: string, depth: number): Promise<Findin
       }
 
       visit(root);
-      return (await Promise.all(findings)).flat();
+      const walked = (await Promise.all(findings)).flat();
+      return [...walked, ...await scanAwsText(source, root, analysed)];
   });
 }

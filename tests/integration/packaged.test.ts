@@ -67,7 +67,7 @@ test(packagedTestName, () => {
       assert.equal(json.status, actual.status, json.stderr);
       assert.equal(json.stderr, "");
       const report = JSON.parse(json.stdout);
-      assert.equal(report.schema_version, 1);
+      assert.equal(report.schema_version, 2);
       assert.equal(report.tool_version, manifest.version);
       const counts: Record<string, number> = {};
       const expectedLines = expected.trimEnd().split("\n");
@@ -117,7 +117,7 @@ test(packagedTestName, () => {
       ["bash-tool", "#!/usr/bin/env -S bash -eu\npwd\n"],
       ["empty/.keep", ""],
       ...["README.md", "plain", "other-tool", ".hidden/bad.sh", "node_modules/bad.sh",
-        "__pycache__/bad.py", "secrets/bad.py", "credentials/bad.sh", ".hidden.sh"]
+        "__pycache__/bad.py", "cdk.out/asset.example/bad.py", "secrets/bad.py", "credentials/bad.sh", ".hidden.sh"]
         .map((file) => [file, "#!/usr/bin/env ruby bash\ninvalid '\n"]),
     ]) put(file, content);
     symlinkSync(tree, join(tree, "cycle"), "dir");
@@ -136,12 +136,12 @@ test(packagedTestName, () => {
     assert.equal(scanned.status, 1, scanned.stderr);
     assert.equal(scanned.stderr, "");
     const clean = JSON.parse(scanned.stdout);
-    assert.equal(clean.schema_version, 1);
+    assert.equal(clean.schema_version, 2);
     assert.equal(clean.tool_version, manifest.version);
     assert.deepEqual(clean.errors, []);
     assert.deepEqual(clean.files.map(({ path }: { path: string }) => path),
       ["bash-tool", "python-tool", "sub/write.sh", "z.BASH"]);
-    assert.deepEqual(clean.summary, { DANGEROUS: 0, SENSITIVE: 0, UNKNOWN: 0, LOCAL: 1, "READ-ONLY": 2 });
+    assert.deepEqual(clean.summary, { MUTATING: 0, SENSITIVE: 0, UNKNOWN: 0, LOCAL: 1, "READ-ONLY": 2 });
     const emptyFolder = run("--json", join(tree, "empty"));
     assert.equal(emptyFolder.status, 0);
     assert.equal(JSON.parse(emptyFolder.stdout).tool_version, manifest.version);
@@ -177,7 +177,7 @@ test(packagedTestName, () => {
     assert.equal(processWrapper.status, 1, processWrapper.stderr);
     const processReport = JSON.parse(processWrapper.stdout);
     assert.equal(processReport.summary.UNKNOWN, 1);
-    assert.equal(processReport.summary.DANGEROUS, 1);
+    assert.equal(processReport.summary.MUTATING, 1);
     assert.match(processWrapper.stdout, /ec2:CreateTags/);
     assert.doesNotMatch(processWrapper.stdout + processWrapper.stderr, /fixture-secret/);
 
@@ -187,9 +187,9 @@ test(packagedTestName, () => {
       const declaration = run(...flag, declarationInput);
       assert.equal(declaration.status, 1, declaration.stderr);
       assert.equal(declaration.stderr, "");
-      assert.match(declaration.stdout, /DANGEROUS/);
+      assert.match(declaration.stdout, /MUTATING/);
       assert.match(declaration.stdout, /rm example/);
-      assert.match(declaration.stdout, /shell construct is not yet analysed/);
+      assert.match(declaration.stdout, /declares a shell variable/);
     }
 
     const functionCases = [
@@ -197,7 +197,7 @@ test(packagedTestName, () => {
       ["fn() { echo ok; }; fn > output", ["LOCAL", "READ-ONLY"]],
       ["fn() { out=example; }; fn", ["LOCAL", "LOCAL"]],
       ["fn() { custom; }; fn", ["UNKNOWN", "UNKNOWN"]],
-      ["fn() { ((count++)); }; fn", ["UNKNOWN", "UNKNOWN"]],
+      ["fn() { ((count++)); }; fn", ["LOCAL", "LOCAL"]],
     ] as const;
     for (const [source, expected] of functionCases) {
       writeFileSync(declarationInput, `${source}\n`);
@@ -218,27 +218,27 @@ test(packagedTestName, () => {
       ["git push origin main", 1, ["UNKNOWN"]],
       ["npm test", 1, ["UNKNOWN"]],
       ["aws s3 ls && kubectl get pods", 0, ["READ-ONLY", "READ-ONLY"]],
-      ["terraform apply", 1, ["DANGEROUS"]],
-      ["kubectl apply -f deploy.yaml", 1, ["DANGEROUS"]],
-      ["npm publish", 1, ["DANGEROUS"]],
-      ["echo ok && terraform apply", 1, ["DANGEROUS", "READ-ONLY"]],
+      ["terraform apply", 1, ["MUTATING"]],
+      ["kubectl apply -f deploy.yaml", 1, ["MUTATING"]],
+      ["npm publish", 1, ["MUTATING"]],
+      ["echo ok && terraform apply", 1, ["MUTATING", "READ-ONLY"]],
       ["", 0, []],
       ["return 0", 0, ["READ-ONLY"]],
       ["shift", 1, ["LOCAL"]],
       ["date -u +%Y", 0, ["READ-ONLY"]],
       ["date --set=example", 1, ["UNKNOWN"]],
       ["echo $(pwd)", 0, ["READ-ONLY", "READ-ONLY"]],
-      ["echo $(rm example)", 1, ["DANGEROUS", "READ-ONLY"]],
+      ["echo $(rm example)", 1, ["MUTATING", "READ-ONLY"]],
       ["echo $(custom)", 1, ["UNKNOWN", "READ-ONLY"]],
       ["jq -r '.items[]' input.json", 0, ["READ-ONLY"]],
       ["sort -o output.txt input.txt", 1, ["UNKNOWN"]],
       ["cat input.txt > output.txt", 1, ["LOCAL"]],
-      ["AWS_PROFILE=example aws ec2 run-instances", 1, ["DANGEROUS"]],
-      ["/usr/local/bin/terraform apply", 1, ["DANGEROUS"]],
-      ['bash -c "terraform apply"', 1, ["DANGEROUS"]],
-      ['sudo bash -c "kubectl delete pods --all"', 1, ["DANGEROUS"]],
-      ['sudo bash -c "echo $(terraform destroy)"', 1, ["DANGEROUS", "UNKNOWN"]],
-      ["echo example | xargs terraform apply", 1, ["DANGEROUS", "READ-ONLY"]],
+      ["AWS_PROFILE=example aws ec2 run-instances", 1, ["MUTATING"]],
+      ["/usr/local/bin/terraform apply", 1, ["MUTATING"]],
+      ['bash -c "terraform apply"', 1, ["MUTATING"]],
+      ['sudo bash -c "kubectl delete pods --all"', 1, ["MUTATING"]],
+      ['sudo bash -c "echo $(terraform destroy)"', 1, ["MUTATING", "UNKNOWN"]],
+      ["echo example | xargs terraform apply", 1, ["MUTATING", "READ-ONLY"]],
     ] as const;
     for (const [script, status, expected] of upstreamCases) {
       writeFileSync(input, script);
@@ -287,7 +287,7 @@ test(packagedTestName, () => {
       fc.array(fc.constantFrom(
         ["echo example", "READ-ONLY"] as const,
         ["mkdir example", "LOCAL"] as const,
-        ["rm example", "DANGEROUS"] as const,
+        ["rm example", "MUTATING"] as const,
         ["custom-example", "UNKNOWN"] as const,
       ), { minLength: 1, maxLength: 6 }),
       fc.constantFrom(" && ", "; ", " | "),
@@ -297,7 +297,7 @@ test(packagedTestName, () => {
         assert.equal(actual.stderr, "");
         assert.equal(actual.status, commands.every(([, classification]) => classification === "READ-ONLY") ? 0 : 1);
         const { entries, schema_version } = JSON.parse(actual.stdout);
-        assert.equal(schema_version, 1);
+        assert.equal(schema_version, 2);
         assert.deepEqual(entries.sort((a: { column: number }, b: { column: number }) => a.column - b.column)
           .map(({ command, class: classification }: { command: string; class: string }) => [command, classification]),
         commands);
@@ -310,7 +310,7 @@ test(packagedTestName, () => {
         ["echo example", "READ-ONLY", 0] as const,
         ["aws secretsmanager get-secret-value --secret-id example", "SENSITIVE", 3] as const,
         ["mkdir example", "LOCAL", 1] as const,
-        ["rm example", "DANGEROUS", 1] as const,
+        ["rm example", "MUTATING", 1] as const,
         ["custom-example", "UNKNOWN", 1] as const,
       ), { maxLength: 5 }),
       (scripts) => {
@@ -324,7 +324,7 @@ test(packagedTestName, () => {
           const { files, errors, summary } = JSON.parse(actual.stdout);
           assert.deepEqual(errors, []);
           assert.equal(files.length, scripts.length);
-          for (const classification of ["READ-ONLY", "SENSITIVE", "LOCAL", "DANGEROUS", "UNKNOWN"]) {
+          for (const classification of ["READ-ONLY", "SENSITIVE", "LOCAL", "MUTATING", "UNKNOWN"]) {
             assert.equal(summary[classification], scripts.filter(([, expected]) => expected === classification).length);
           }
         } finally {

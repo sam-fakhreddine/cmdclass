@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { analyzeFile, inputErrorMessage } from "./input.ts";
 import { type Report, emptySummary, formatReport, formatSummary, oneLine, reportExitCode, classes } from "./report.ts";
 
-const excludedDirectories = new Set(["node_modules", "__pycache__", "secrets", "credentials"]);
+// cdk.out is CDK build output: bundled assets carry vendored copies of dependencies such as the AWS SDK.
+const excludedDirectories = new Set(["node_modules", "__pycache__", "cdk.out", "secrets", "credentials"]);
 type FileReport = { path: string; report: Report };
 type ScanError = { path: string; message: string };
 
@@ -43,7 +44,7 @@ export async function scanFolder(root: string) {
       }
     }
   }
-  return { schema_version: 1 as const, files, errors, summary };
+  return { schema_version: 2 as const, files, errors, summary };
 }
 
 type FolderReport = Awaited<ReturnType<typeof scanFolder>>;

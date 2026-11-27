@@ -5,8 +5,10 @@ import { formatReport, oneLine, reportExitCode } from "./report.ts";
 import { analyzeFile, inputErrorMessage } from "./input.ts";
 import { folderExitCode, formatFolderReport, scanFolder } from "./folder.ts";
 import { readSnapshot, updateSnapshot } from "./aws-data.ts";
+import { loadOfflineSnapshot } from "./aws/operations.ts";
+import { buildPermissionsReport, formatPermissionsReport } from "./permissions.ts";
 
-const help = `Usage: cmdclass [--json] [--] FILE_OR_DIRECTORY
+const help = `Usage: cmdclass [--json] [--permissions] [--] FILE_OR_DIRECTORY
 Statically reports command effects; it never runs the script or certifies safety.
 Sensitive detection does not infer that arbitrary files or variables hold secrets.
 Directory scans recurse over .sh, .bash, .py and supported extensionless scripts.
@@ -14,10 +16,11 @@ Hidden entries, dependency/cache directories, secrets/credentials directories,
 and symbolic links inside a directory scan are skipped.
   -h, --help         Show this help
   --json             Print a JSON report
+  --permissions      Report candidate AWS IAM actions and unknowns
   --update-aws-data   Refresh the local AWS Service Reference snapshot
   --version           Print the package version and AWS snapshot metadata
 
-Exit codes: 0 read-only or no findings, 1 dangerous/unknown/local, 3 sensitive
+Exit codes: 0 read-only or no findings, 1 mutating/unknown/local, 3 sensitive
 only (or with reads), 2 usage or scan error (takes precedence in a folder scan).
 `;
 
@@ -49,13 +52,15 @@ async function main(args: string[]): Promise<number> {
   }
   let path: string;
   let json: boolean;
+  let permissions: boolean;
   try {
     const { values, positionals } = parseArgs({
-      args, options: { json: { type: "boolean" } }, allowPositionals: true,
+      args, options: { json: { type: "boolean" }, permissions: { type: "boolean" } }, allowPositionals: true,
     });
     if (positionals.length !== 1) throw new Error("expected one input path");
     [path] = positionals;
     json = values.json === true;
+    permissions = values.permissions === true;
   } catch {
     process.stderr.write("cmdclass: expected one file or directory; see --help\n");
     return 2;
@@ -70,8 +75,14 @@ async function main(args: string[]): Promise<number> {
   try {
     if ((await stat(path)).isDirectory()) {
       const result = await scanFolder(path);
-      process.stdout.write(json ? `${JSON.stringify({ ...result, tool_version: version })}\n`
-        : `cmdclass ${oneLine(version)}\n${formatFolderReport(result, false)}`);
+      if (permissions) {
+        const report = buildPermissionsReport(result.files, result.errors, (await loadOfflineSnapshot())?.date ?? null);
+        process.stdout.write(json ? `${JSON.stringify({ ...report, tool_version: version })}\n`
+          : `cmdclass ${oneLine(version)}\n${formatPermissionsReport(report)}`);
+      } else {
+        process.stdout.write(json ? `${JSON.stringify({ ...result, tool_version: version })}\n`
+          : `cmdclass ${oneLine(version)}\n${formatFolderReport(result, false)}`);
+      }
       if (!json) {
         for (const error of result.errors) {
           process.stderr.write(`cmdclass: ${oneLine(error.path)}: ${oneLine(error.message)}\n`);
@@ -81,8 +92,14 @@ async function main(args: string[]): Promise<number> {
     }
     const report = await analyzeFile(path);
     if (!report) throw new Error("explicit input was skipped");
-    process.stdout.write(json ? `${JSON.stringify({ ...report, tool_version: version })}\n`
-      : `cmdclass ${oneLine(version)}\n${formatReport(report, false)}`);
+    if (permissions) {
+      const output = buildPermissionsReport([{ path, report }], [], (await loadOfflineSnapshot())?.date ?? null);
+      process.stdout.write(json ? `${JSON.stringify({ ...output, tool_version: version })}\n`
+        : `cmdclass ${oneLine(version)}\n${formatPermissionsReport(output)}`);
+    } else {
+      process.stdout.write(json ? `${JSON.stringify({ ...report, tool_version: version })}\n`
+        : `cmdclass ${oneLine(version)}\n${formatReport(report, false)}`);
+    }
     return reportExitCode(report);
   } catch (error) {
     process.stderr.write(`cmdclass: ${inputErrorMessage(error, "could not read or analyse the input")}\n`);

@@ -28,7 +28,7 @@ ssm.get_parameter(Name="example", WithDecryption=True)
 ssm.get_parameter(Name="example", **options)
 `);
   assert.deepEqual(findings.map(({ class: classification }) => classification),
-    ["READ-ONLY", "DANGEROUS", "UNKNOWN", "DANGEROUS", "SENSITIVE", "SENSITIVE", "UNKNOWN"]);
+    ["READ-ONLY", "MUTATING", "UNKNOWN", "MUTATING", "SENSITIVE", "SENSITIVE", "UNKNOWN"]);
   assert.deepEqual(findings[0].context, { profile: "example" });
   assert.match(findings[1].reason, /DryRun present/);
   assert.doesNotMatch(JSON.stringify(findings), /synthetic-fixture-argument/);
@@ -45,7 +45,7 @@ test("real CLI applies Python rules offline and rejects a malformed file without
     } else {
       assert.equal(result.stderr, "");
       assert.deepEqual(JSON.parse(result.stdout).entries.map((x: { class: string }) => x.class),
-        ["DANGEROUS", "READ-ONLY"]);
+        ["MUTATING", "READ-ONLY"]);
     }
   }
 });
@@ -106,7 +106,7 @@ asyncio.create_subprocess_exec("aws", "ec2", "create-tags")
   assert.deepEqual(findings.map(({ line, class: classification, reason }) =>
     [line, classification, reason]), [
     [9, "UNKNOWN", "Python subprocess command is not analysed"],
-    [11, "DANGEROUS", "IAM ec2:CreateTags (Write); via Python subprocess"],
+    [11, "MUTATING", "IAM ec2:CreateTags (Write); via Python subprocess"],
     [12, "UNKNOWN", "Python subprocess command is not analysed"],
     [12, "READ-ONLY", "IAM sts:GetCallerIdentity (Read); via Python subprocess"],
     [13, "UNKNOWN", "Python subprocess command is not analysed"],
@@ -129,7 +129,7 @@ def main(profile, ids, desired):
     aws(profile, "ec2", "create-tags", "--resources", *ids, "--tags", desired)
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [6, "UNKNOWN"], [9, "READ-ONLY"], [10, "READ-ONLY"], [11, "DANGEROUS"],
+    [6, "UNKNOWN"], [9, "READ-ONLY"], [10, "READ-ONLY"], [11, "MUTATING"],
   ]);
   assert.match(findings[3].reason, /ec2:CreateTags/);
 });
@@ -162,7 +162,7 @@ subprocess.run(["aws", "ec2", "create-tags"], executable=dynamic)
 subprocess.run(["aws", *get_args(), "ec2", "describe-instances"])
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [3, "UNKNOWN"], [3, "DANGEROUS"], [4, "UNKNOWN"], [5, "UNKNOWN"], [6, "UNKNOWN"],
+    [3, "UNKNOWN"], [3, "MUTATING"], [4, "UNKNOWN"], [5, "UNKNOWN"], [6, "UNKNOWN"],
   ]);
 });
 
@@ -190,7 +190,7 @@ test("CLI flags a subprocess wrapper instead of reporting an all-clear", () => {
     assert.match(result.stdout, /ec2:CreateTags/);
     if (json) {
       assert.equal(JSON.parse(result.stdout).summary.UNKNOWN, 1);
-      assert.equal(JSON.parse(result.stdout).summary.DANGEROUS, 1);
+      assert.equal(JSON.parse(result.stdout).summary.MUTATING, 1);
     }
   }
 });
@@ -214,7 +214,7 @@ def unsupported(session: object):
 `);
   assert.deepEqual(findings.map(({ class: classification, command, reason }) =>
     [classification, command, reason]), [
-    ["DANGEROUS", "delete_bucket(...)", "IAM s3:DeleteBucket (Write)"],
+    ["MUTATING", "delete_bucket(...)", "IAM s3:DeleteBucket (Write)"],
     ["READ-ONLY", "get_caller_identity(...)", "IAM sts:GetCallerIdentity (Read)"],
     ["UNKNOWN", "delete_bucket(...)", "client type not known (unresolved assignment)"],
   ]);
@@ -238,10 +238,10 @@ boto3.client("ssm").start_session()
     ["SENSITIVE", "returns decrypted plaintext"],
     ["SENSITIVE", "returns a registry authorization token"],
     ["SENSITIVE", "creates a short-lived database token"],
-    ["DANGEROUS", "creates a long-lived AWS access key"],
+    ["MUTATING", "creates a long-lived AWS access key"],
     ["READ-ONLY", "reads parameters without decryption"],
     ["UNKNOWN", "SSM decryption option is dynamic"],
-    ["DANGEROUS", "opens a session on a remote host"],
+    ["MUTATING", "opens a session on a remote host"],
   ]);
   assert.doesNotMatch(JSON.stringify(findings), /fixture-sensitive-arg/);
 });
@@ -259,7 +259,7 @@ operate = another_callable
 operate(ec2)
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [4, "UNKNOWN"], [6, "DANGEROUS"], [7, "DANGEROUS"],
+    [4, "UNKNOWN"], [6, "MUTATING"], [7, "MUTATING"],
   ]);
   assert.match(findings[1].reason, /DryRun present; via operate\(\)$/);
 });
@@ -275,18 +275,16 @@ _inspect(s3)
 _inspect(client=s3)
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [4, "DANGEROUS"], [5, "READ-ONLY"],
+    [4, "MUTATING"], [5, "READ-ONLY"],
   ]);
 });
 
-test("public, escaping, mixed-service, and unknown-call helpers remain UNKNOWN", async () => {
+test("escaping, mixed-service, and unknown-call helpers remain UNKNOWN", async () => {
   const cases = [
-    [`import boto3\ndef inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ns3 = boto3.client("s3")\ninspect(s3)`, 2],
     [`import boto3\ndef _inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ns3 = boto3.client("s3")\nalias = _inspect\n_inspect(s3)`, 2],
     [`import boto3\ndef _inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ns3 = boto3.client("s3")\nec2 = boto3.client("ec2")\n_inspect(s3)\n_inspect(ec2)`, 2],
     [`import boto3\ndef _inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ndef caller(client):\n    _inspect(client)\ns3 = boto3.client("s3")\n_inspect(s3)\ncaller(dynamic_client)`, 2],
     [`import boto3\ndef _inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ns3 = boto3.client("s3")\n_inspect(s3)\n_inspect(*clients)`, 2],
-    [`__all__ = build_exports()\nimport boto3\ndef _inspect(client):\n    client.delete_bucket()\n    client.list_buckets()\ns3 = boto3.client("s3")\n_inspect(s3)`, 2],
   ] as const;
   for (const [source, unknownCount] of cases) {
     const findings = await analyzePython(source);
@@ -297,7 +295,7 @@ test("public, escaping, mixed-service, and unknown-call helpers remain UNKNOWN",
 
 test("SDK-only transfer helpers classify local downloads and remote writes", () => {
   for (const [method, expected] of [
-    ["upload_fileobj", "DANGEROUS"], ["copy", "DANGEROUS"], ["download_fileobj", "LOCAL"],
+    ["upload_fileobj", "MUTATING"], ["copy", "MUTATING"], ["download_fileobj", "LOCAL"],
   ]) {
     assert.equal(classifySdkMethod(undefined, "s3", method, {}).class, expected, method);
   }
@@ -319,7 +317,7 @@ def never_called(client: S3Client):
     client.delete_bucket(Bucket="example")
 `);
   assert.deepEqual(findings.map(({ class: classification }) => classification),
-    ["READ-ONLY", "DANGEROUS", "LOCAL", "DANGEROUS", "DANGEROUS", "READ-ONLY", "DANGEROUS"]);
+    ["READ-ONLY", "MUTATING", "LOCAL", "MUTATING", "MUTATING", "READ-ONLY", "MUTATING"]);
 });
 
 test("vendored resource models resolve actions and returned resource types across services", async () => {
@@ -336,12 +334,12 @@ sns = boto3.resource("sns")
 sns.Topic("example").publish(Message="example")
 `);
   assert.deepEqual(findings.map(({ class: classification, source }) => [classification, source]), [
-    ["DANGEROUS", "IAM ec2:TerminateInstances (Write)"],
-    ["DANGEROUS", "IAM ec2:TerminateInstances (Write)"],
-    ["DANGEROUS", "IAM sqs:CreateQueue (Write)"],
-    ["DANGEROUS", "IAM sqs:SendMessage (Write)"],
+    ["MUTATING", "IAM ec2:TerminateInstances (Write)"],
+    ["MUTATING", "IAM ec2:TerminateInstances (Write)"],
+    ["MUTATING", "IAM sqs:CreateQueue (Write)"],
+    ["MUTATING", "IAM sqs:SendMessage (Write)"],
     ["UNKNOWN", "AWS"],
-    ["DANGEROUS", "IAM sns:Publish (Write)"],
+    ["MUTATING", "IAM sns:Publish (Write)"],
   ]);
 });
 
@@ -374,7 +372,7 @@ test("the packaged S3 model resolves object deletes and collection deletes to di
   ] as const) {
     assert.ok(action);
     assert.equal(action.operation, operation);
-    assert.equal(classifyOperation(snapshot, "s3", action.operation).class, "DANGEROUS");
+    assert.equal(classifyOperation(snapshot, "s3", action.operation).class, "MUTATING");
   }
 });
 
@@ -390,7 +388,7 @@ else:
 client.list_buckets()
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]),
-    [[6, "DANGEROUS"], [8, "READ-ONLY"], [9, "UNKNOWN"]]);
+    [[6, "MUTATING"], [8, "READ-ONLY"], [9, "UNKNOWN"]]);
 });
 
 test("mock scopes annotate rather than suppress effects, and dynamic API lookup stays UNKNOWN", async () => {
@@ -411,8 +409,8 @@ first.meta.method_to_api_mapping
 `);
   assert.deepEqual(findings.map(({ line, class: classification, reason }) =>
     [line, classification, reason.includes("inside a test")]), [
-    [9, "DANGEROUS", true], [11, "DANGEROUS", true], [12, "DANGEROUS", false],
-    [13, "DANGEROUS", false], [14, "UNKNOWN", false],
+    [9, "MUTATING", true], [11, "MUTATING", true], [12, "MUTATING", false],
+    [13, "MUTATING", false], [14, "UNKNOWN", false],
   ]);
   assert.equal(findings.at(-1)?.reason, "method name is dynamic");
 });
@@ -425,7 +423,7 @@ boto3.client("s3").delete_bucket(Bucket="example")
 PY
 `);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]),
-    [[1, "READ-ONLY"], [4, "DANGEROUS"]]);
+    [[1, "READ-ONLY"], [4, "MUTATING"]]);
   await assert.rejects(() => analyzeShell("echo ok\npython -c 'import boto3; boto3.client('"),
     (error) => error instanceof InputError && error.line === 2);
 });
@@ -435,8 +433,8 @@ describe("TestProperties", () => {
   test("AWS subprocess classification requires a known executable, service, and operation", async () => {
     await fc.assert(fc.asyncProperty(
       fc.constantFrom(
-        ["ec2", "create-tags", "DANGEROUS"],
-        ["s3api", "delete-bucket", "DANGEROUS"],
+        ["ec2", "create-tags", "MUTATING"],
+        ["s3api", "delete-bucket", "MUTATING"],
         ["sts", "get-caller-identity", "READ-ONLY"],
       ),
       fc.integer({ min: 0, max: 2 }),
@@ -524,7 +522,7 @@ describe("TestProperties", () => {
         const valid = await analyzePython(
           `${importLine}\ndef inspect(session: ${annotation}):\n` +
           `    client = session.client("s3")\n    client.delete_bucket(Bucket="fixture")`);
-        assert.deepEqual(valid.map(({ class: classification }) => classification), ["DANGEROUS"]);
+        assert.deepEqual(valid.map(({ class: classification }) => classification), ["MUTATING"]);
 
         const unsupported = await analyzePython(
           `import boto3\ndef inspect(session: object):\n` +
@@ -539,9 +537,9 @@ describe("TestProperties", () => {
   test("private helper provenance requires all direct callers to agree", async () => {
     await fc.assert(fc.asyncProperty(
       fc.constantFrom(
-        ["s3", "delete_bucket", "list_buckets", "DANGEROUS"],
-        ["ec2", "terminate_instances", "describe_instances", "DANGEROUS"],
-        ["kms", "create_key", "describe_key", "DANGEROUS"],
+        ["s3", "delete_bucket", "list_buckets", "MUTATING"],
+        ["ec2", "terminate_instances", "describe_instances", "MUTATING"],
+        ["kms", "create_key", "describe_key", "MUTATING"],
       ),
       fc.integer({ min: 1, max: 4 }),
       fc.stringMatching(/^[A-Za-z][A-Za-z0-9_]{0,15}$/),

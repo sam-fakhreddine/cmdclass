@@ -22,14 +22,14 @@ test("shell CLI matches the local-effects golden and agrees with JSON", () => {
   assert.equal(text.stderr, "");
   assert.equal(text.stdout, [
     `cmdclass ${version}`,
-    "DANGEROUS  4:1  rm -- example-output.txt  can delete or destroy local data",
+    "MUTATING   4:1  rm -- example-output.txt  can delete or destroy local data",
     "LOCAL      3:1  printf '%s\\n' \"synthetic output\" > example-output.txt  writes to a local output redirect",
     "READ-ONLY  2:1  echo \"read-only text\"  no filesystem or remote write identified",
-    "summary: 1 read-only, 1 local, 0 unknown, 0 sensitive, 1 dangerous", "",
+    "summary: 1 read-only, 1 local, 0 unknown, 0 sensitive, 1 mutating", "",
   ].join("\n"));
   const json = cli("local-effects.sh", true);
   assert.equal(json.status, text.status);
-  assert.equal(JSON.parse(json.stdout).schema_version, 1);
+  assert.equal(JSON.parse(json.stdout).schema_version, 2);
   assert.deepEqual(JSON.parse(json.stdout).entries.map((x: { line: number }) => x.line), [4, 3, 2]);
 });
 
@@ -75,13 +75,13 @@ test("nested commands and literal shell bodies map findings to original position
     "EOF",
   ].join("\n"));
   assert.deepEqual(findings.map(({ line, column, class: classification }) => [line, column, classification]), [
-    [1, 1, "READ-ONLY"], [1, 8, "DANGEROUS"], [2, 10, "READ-ONLY"], [2, 19, "LOCAL"], [4, 1, "DANGEROUS"],
+    [1, 1, "READ-ONLY"], [1, 8, "MUTATING"], [2, 10, "READ-ONLY"], [2, 19, "LOCAL"], [4, 1, "MUTATING"],
   ]);
   await assert.rejects(() => analyzeShell("echo ok\nbash -c 'echo $(pwd'"), (error) =>
     error instanceof InputError && error.line === 2);
 });
 
-test("nested execution wrappers and download pipelines do not hide dangerous findings", async () => {
+test("nested execution wrappers and download pipelines do not hide mutating findings", async () => {
   const findings = await analyzeShell([
     "printf '%s\\n' sample | xargs rm",
     "find . -exec rm {} \\;",
@@ -89,7 +89,7 @@ test("nested execution wrappers and download pipelines do not hide dangerous fin
     "parallel rm ::: example",
     "curl https://example.invalid/script | bash",
   ].join("\n"));
-  assert.deepEqual(findings.filter((entry) => entry.class === "DANGEROUS").map((entry) => entry.line), [1, 2, 3, 4, 5]);
+  assert.deepEqual(findings.filter((entry) => entry.class === "MUTATING").map((entry) => entry.line), [1, 2, 3, 4, 5]);
   assert.equal(findings.at(-1)?.reason, "runs downloaded code");
 });
 
@@ -110,7 +110,7 @@ test("xargs supports fixed options without treating runtime arguments as read-on
     "xargs bash -c 'echo ok'",
   ].join("\n"));
   assert.deepEqual(findings.map(({ class: classification, reason }) => [classification, reason]), [
-    ["DANGEROUS", "can delete or destroy local data"],
+    ["MUTATING", "can delete or destroy local data"],
     ["UNKNOWN", "nested arguments are supplied at runtime"],
     ["UNKNOWN", "command is not supported by the local rules"],
     ["UNKNOWN", "nested arguments are supplied at runtime"],
@@ -120,15 +120,16 @@ test("xargs supports fixed options without treating runtime arguments as read-on
 test("known wrapper options preserve the inner effect and unknown options stay opaque", async () => {
   const rows = [
     ["sudo -u example -E aws s3 ls", "READ-ONLY"],
-    ["sudo --user=example -- /bin/rm example", "DANGEROUS"],
-    ["timeout --signal=TERM --kill-after 2s 0.5s rm example", "DANGEROUS"],
-    ["env -- FOO=bar /bin/rm example", "DANGEROUS"],
+    ["sudo --user=example -- /bin/rm example", "MUTATING"],
+    ["timeout --signal=TERM --kill-after 2s 0.5s rm example", "MUTATING"],
+    ["env -- FOO=bar /bin/rm example", "MUTATING"],
     ["env --ignore-environment aws s3 ls", "UNKNOWN"],
     ["env FOO=bar -- /bin/rm example", "UNKNOWN"],
     ["env -S 'echo example' rm example", "UNKNOWN"],
     ["sudo --unknown echo example", "UNKNOWN"],
     ["sudo -u -- echo example", "UNKNOWN"],
-    ["command -v rm", "UNKNOWN"],
+    ["command -v rm", "READ-ONLY"],
+    ["command -x rm", "UNKNOWN"],
   ] as const;
   for (const [source, expected] of rows) {
     assert.deepEqual((await analyzeShell(source)).map((item) => item.class), [expected], source);
@@ -161,8 +162,8 @@ test("DeployShield normalization scenarios use cmdclass context and failure rule
 test("shell function bodies and calls expose known destructive effects", async () => {
   const findings = await analyzeShell("wipe() { rm -- \"$1\"; }\nwipe example");
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]),
-    [[1, "DANGEROUS"], [2, "DANGEROUS"]]);
-  assert.equal(findings[1].reason, "calls wipe (DANGEROUS)");
+    [[1, "MUTATING"], [2, "MUTATING"]]);
+  assert.equal(findings[1].reason, "calls wipe (MUTATING)");
 });
 
 test("function calls inherit only effects proven by their analyzed bodies", async () => {
@@ -172,25 +173,24 @@ test("function calls inherit only effects proven by their analyzed bodies", asyn
     ["fn() { out=example; }; fn", ["LOCAL", "LOCAL"]],
     ["fn() { custom; }; fn", ["UNKNOWN", "UNKNOWN"]],
     ["fn() { }; fn", ["UNKNOWN"]],
-    ["fn() { ((count++)); }; fn", ["UNKNOWN", "UNKNOWN"]],
-    ["fn() { echo $((count++)); }; fn", ["UNKNOWN", "UNKNOWN"]],
+    ["fn() { ((count++)); }; fn", ["LOCAL", "LOCAL"]],
+    ["fn() { echo $((count++)); }; fn", ["LOCAL", "LOCAL"]],
     ["fn() { fn; }; fn", ["UNKNOWN", "UNKNOWN"]],
-    ["fn() { rm example; custom; }; fn", ["DANGEROUS", "UNKNOWN", "DANGEROUS"]],
+    ["fn() { rm example; custom; }; fn", ["MUTATING", "UNKNOWN", "MUTATING"]],
   ] as const;
   for (const [source, expected] of rows) {
     assert.deepEqual((await analyzeShell(source)).map(({ class: classification }) => classification), expected, source);
   }
 });
 
-test("arithmetic shell commands and expansions are not reported as read-only", async () => {
+test("arithmetic shell commands and expansions are local effects, never read-only", async () => {
   for (const source of ["((count++))", "echo $((count++))", "echo $(( $(rm example) ))"]) {
     const findings = await analyzeShell(source);
-    assert.equal(findings[0].class, "UNKNOWN", source);
-    if (source !== "((count++))") assert.equal(findings[0].reason, "arithmetic expansion is not analysed");
+    assert.equal(findings[0].class, "LOCAL", source);
+    assert.equal(findings[0].reason, "evaluates shell arithmetic", source);
   }
-  assert.equal((await analyzeShell("((count++))"))[0].reason, "arithmetic command is not analysed");
   const nested = await analyzeShell("(( $(rm example) ))");
-  assert.ok(nested.some(({ class: classification }) => classification === "DANGEROUS"));
+  assert.ok(nested.some(({ class: classification }) => classification === "MUTATING"));
 });
 
 test("loops, conditional bodies, continued lines, and local redirects retain positions", async () => {
@@ -209,7 +209,7 @@ test("loops, conditional bodies, continued lines, and local redirects retain pos
   ].join("\n");
   const findings = await analyzeShell(source);
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [2, "READ-ONLY"], [2, "READ-ONLY"], [2, "READ-ONLY"], [3, "DANGEROUS"],
+    [2, "READ-ONLY"], [2, "READ-ONLY"], [2, "READ-ONLY"], [3, "MUTATING"],
     [5, "READ-ONLY"], [6, "READ-ONLY"], [7, "UNKNOWN"], [8, "UNKNOWN"],
     [9, "LOCAL"], [10, "READ-ONLY"], [10, "LOCAL"], [11, "UNKNOWN"],
   ]);
@@ -218,7 +218,7 @@ test("loops, conditional bodies, continued lines, and local redirects retain pos
 
 test("shell syntax fixtures distinguish substitution bodies, literal eval, and dynamic commands", async () => {
   const rows = [
-    ["ID=$(aws ec2 run-instances)", ["UNKNOWN", "DANGEROUS"]],
+    ["ID=$(aws ec2 run-instances)", ["LOCAL", "MUTATING"]],
     ["echo `pwd`", ["READ-ONLY", "READ-ONLY"]],
     ["echo <(pwd) >(mkdir example)", ["READ-ONLY", "READ-ONLY", "LOCAL"]],
     ["eval 'mkdir example'", ["LOCAL"]],
@@ -236,7 +236,7 @@ test("shell syntax fixtures distinguish substitution bodies, literal eval, and d
   }
   const chain = await analyzeShell("cd repo && aws s3 ls | aws s3 rm s3://example");
   assert.deepEqual(chain.map(({ line, column, class: classification }) => [line, column, classification]), [
-    [1, 1, "READ-ONLY"], [1, 12, "READ-ONLY"], [1, 24, "DANGEROUS"],
+    [1, 1, "READ-ONLY"], [1, 12, "READ-ONLY"], [1, 24, "MUTATING"],
   ]);
 });
 
@@ -245,17 +245,17 @@ test("classifies a known outer command separately from nested command effects", 
     ["echo $(pwd)", ["READ-ONLY", "READ-ONLY"]],
     ['echo "$(pwd; echo ok)"', ["READ-ONLY", "READ-ONLY", "READ-ONLY"]],
     ["echo $(pwd) > output", ["LOCAL", "READ-ONLY"]],
-    ["echo $(rm example)", ["READ-ONLY", "DANGEROUS"]],
+    ["echo $(rm example)", ["READ-ONLY", "MUTATING"]],
     ["echo $(custom)", ["READ-ONLY", "UNKNOWN"]],
-    ["echo $(pwd; rm example)", ["READ-ONLY", "READ-ONLY", "DANGEROUS"]],
+    ["echo $(pwd; rm example)", ["READ-ONLY", "READ-ONLY", "MUTATING"]],
     ["echo $(echo $(pwd))", ["READ-ONLY", "READ-ONLY", "READ-ONLY"]],
     ["echo <(pwd)", ["READ-ONLY", "READ-ONLY"]],
     ["echo $(printf example)", ["READ-ONLY", "READ-ONLY"]],
     ['echo "$(pwd)" "$value"', ["READ-ONLY", "READ-ONLY"]],
-    ['echo "$(pwd)" $((value++))', ["UNKNOWN", "READ-ONLY"]],
+    ['echo "$(pwd)" $((value++))', ["LOCAL", "READ-ONLY"]],
     ["echo $(pwd > output)", ["READ-ONLY", "LOCAL"]],
     ["echo $(pwd) > $output", ["UNKNOWN", "READ-ONLY"]],
-    ["pwd() { rm example; }\necho $(pwd)", ["DANGEROUS", "READ-ONLY", "DANGEROUS"]],
+    ["pwd() { rm example; }\necho $(pwd)", ["MUTATING", "READ-ONLY", "MUTATING"]],
   ] as const) {
     const findings = await analyzeShell(source);
     assert.deepEqual(findings.map(({ class: classification }) => classification), expected, source);
@@ -265,14 +265,14 @@ test("classifies a known outer command separately from nested command effects", 
 test("classifies a known outer command separately from nested command effects", async () => {
   const rows = [
     ["cat \"$(pwd)\"", ["READ-ONLY", "READ-ONLY"]],
-    ["cat \"$(rm example)\"", ["READ-ONLY", "DANGEROUS"]],
+    ["cat \"$(rm example)\"", ["READ-ONLY", "MUTATING"]],
     ["grep pattern \"$(custom)\" input.txt", ["READ-ONLY", "UNKNOWN"]],
     ["mkdir \"$(pwd)\"", ["LOCAL", "READ-ONLY"]],
     ["echo \"$(custom)\"", ["READ-ONLY", "UNKNOWN"]],
-    ["echo \"$(rm example)\" > output", ["LOCAL", "DANGEROUS"]],
+    ["echo \"$(rm example)\" > output", ["LOCAL", "MUTATING"]],
     ["sort \"$(pwd)\"", ["UNKNOWN", "READ-ONLY"]],
     ["curl \"$(pwd)\"", ["UNKNOWN", "READ-ONLY"]],
-    ["echo \"$((count++))\"", ["UNKNOWN"]],
+    ["echo \"$((count++))\"", ["LOCAL"]],
   ] as const;
   for (const [source, expected] of rows) {
     assert.deepEqual((await analyzeShell(source)).map(({ class: classification }) => classification), expected, source);
@@ -289,8 +289,8 @@ test("redirect substitutions do not hide effects and unknown script runners expl
     "node -e 'example()'",
   ].join("\n"));
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]), [
-    [1, "UNKNOWN"], [1, "DANGEROUS"], [2, "SENSITIVE"], [2, "READ-ONLY"],
-    [3, "UNKNOWN"], [3, "DANGEROUS"], [4, "UNKNOWN"], [5, "UNKNOWN"], [6, "UNKNOWN"],
+    [1, "UNKNOWN"], [1, "MUTATING"], [2, "SENSITIVE"], [2, "READ-ONLY"],
+    [3, "UNKNOWN"], [3, "MUTATING"], [4, "UNKNOWN"], [5, "UNKNOWN"], [6, "UNKNOWN"],
   ]);
   assert.deepEqual(findings.slice(-3).map(({ reason }) => reason),
     ["runs another file", "runs another file", "inline code not analysed"]);
@@ -300,7 +300,7 @@ test("new local rules do not hide nested destructive effects", async () => {
   for (const source of ["return $(rm example)", "shift $(rm example)", "date +$(rm example)"]) {
     const findings = await analyzeShell(source);
     assert.ok(findings.some(({ class: classification, command }) =>
-      classification === "DANGEROUS" && command === "rm example"), source);
+      classification === "MUTATING" && command === "rm example"), source);
     assert.notEqual(findings[0].class, "READ-ONLY", source);
   }
 });
@@ -322,7 +322,7 @@ test("known text filters remain UNKNOWN when a command can write a file", async 
   }
 });
 
-test("declarations expose nested effects without assuming the declaration is safe", async () => {
+test("declarations are local effects and expose the commands nested in them", async () => {
   const rows = [
     ["export item=$(rm example)", ["rm example"]],
     ["function run() { local item=$(rm example); }", ["rm example"]],
@@ -336,18 +336,18 @@ test("declarations expose nested effects without assuming the declaration is saf
     ["export item='literal $(rm example)'", []],
     ["export item=<(rm example)", ["rm example"]],
   ] as const;
-  for (const [source, dangerousCommands] of rows) {
+  for (const [source, mutatingCommands] of rows) {
     const findings = await analyzeShell(source);
-    assert.equal(findings[0]?.class, "UNKNOWN", source);
-    assert.equal(findings[0]?.reason, "shell construct is not yet analysed", source);
+    assert.equal(findings[0]?.class, "LOCAL", source);
+    assert.match(findings[0]?.reason ?? "", /^(?:declares|unsets) a shell variable$/, source);
     assert.equal(findings[0]?.command, "<shell text omitted>", source);
-    assert.deepEqual(findings.filter((entry) => entry.class === "DANGEROUS")
-      .map(({ command, line, column }) => [command, line, column]), dangerousCommands.map((command) =>
+    assert.deepEqual(findings.filter((entry) => entry.class === "MUTATING")
+      .map(({ command, line, column }) => [command, line, column]), mutatingCommands.map((command) =>
       [command, 1, source.indexOf(command) + 1]), source);
   }
   const findings = await analyzeShell("function wipe() { local value=$(rm example); }\nwipe");
   assert.deepEqual(findings.map(({ line, class: classification }) => [line, classification]),
-    [[1, "UNKNOWN"], [1, "DANGEROUS"], [2, "DANGEROUS"]]);
+    [[1, "LOCAL"], [1, "MUTATING"], [2, "MUTATING"]]);
 });
 
 test("literal interpreter bodies do not swallow outer substitutions or mistake script arguments for code", async () => {
@@ -361,7 +361,7 @@ test("literal interpreter bodies do not swallow outer substitutions or mistake s
   assert.deepEqual(findings.map(({ line, column, class: classification, reason }) =>
     [line, column, classification, reason]), [
     [1, 14, "READ-ONLY", "no filesystem or remote write identified"],
-    [1, 26, "DANGEROUS", "can delete or destroy local data"],
+    [1, 26, "MUTATING", "can delete or destroy local data"],
     [2, 1, "UNKNOWN", "runs another file"],
     [3, 1, "UNKNOWN", "runs another file"],
   ]);
@@ -432,7 +432,7 @@ describe("TestProperties", () => {
         const uncertain = await analyzeShell(`echo $(${safe.join("; ")}; ${unsafe})`);
         assert.equal(uncertain[0].class, "READ-ONLY");
         assert.deepEqual(uncertain.slice(1).map(({ class: classification }) => classification),
-          [...Array(safe.length).fill("READ-ONLY"), unsafe === "rm example" ? "DANGEROUS" : "UNKNOWN"]);
+          [...Array(safe.length).fill("READ-ONLY"), unsafe === "rm example" ? "MUTATING" : "UNKNOWN"]);
       },
     ), propertyOptions);
   });
@@ -441,7 +441,7 @@ describe("TestProperties", () => {
   test("preserves outer and inner effects independently for known commands", async () => {
     await fc.assert(fc.asyncProperty(
       fc.constantFrom("echo", "cat", "grep", "jq", "cut", "tr"),
-      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "DANGEROUS"], ["custom", "UNKNOWN"]),
+      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "MUTATING"], ["custom", "UNKNOWN"]),
       async (outer, [inner, innerClass]) => {
         const findings = await analyzeShell(`${outer} "$(${inner})"`);
         const classes = findings.map(({ class: classification }) => classification);
@@ -455,12 +455,12 @@ describe("TestProperties", () => {
   test("retains each nested declaration effect and its source position", async () => {
     await fc.assert(fc.asyncProperty(
       fc.constantFrom("export", "local", "declare", "readonly"),
-      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "DANGEROUS"], ["mkdir example", "LOCAL"]),
+      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "MUTATING"], ["mkdir example", "LOCAL"]),
       fc.integer({ min: 1, max: 8 }),
       async (declaration, [command, classification], count) => {
         const source = `${declaration} ${Array.from({ length: count }, (_, i) => `v${i}=$(${command})`).join(" ")}`;
         const findings = await analyzeShell(source);
-        assert.equal(findings[0]?.class, "UNKNOWN");
+        assert.equal(findings[0]?.class, "LOCAL");
         const positions = [...source.matchAll(new RegExp(command.replaceAll(" ", "\\s+"), "g"))]
           .map((match) => match.index + 1);
         assert.deepEqual(findings.slice(1).map(({ line, column, class: actual }) => [line, column, actual]),
@@ -472,7 +472,7 @@ describe("TestProperties", () => {
   // Catches: Integrity (SAFETY) - nesting moves or drops an inner effect.
   test("retains a labeled command at its original position inside substitutions", async () => {
     await fc.assert(fc.asyncProperty(fc.integer({ min: 1, max: 12 }),
-      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "DANGEROUS"], ["mkdir example", "LOCAL"]),
+      fc.constantFrom(["pwd", "READ-ONLY"], ["rm example", "MUTATING"], ["mkdir example", "LOCAL"]),
       async (depth, [code, classification]) => {
         const prefix = "echo $(".repeat(depth);
         const findings = await analyzeShell(`${prefix}${code}${")".repeat(depth)}`);
@@ -487,7 +487,7 @@ describe("TestProperties", () => {
     const action = fc.constantFrom(
       { code: "echo 'hi; rm example'", label: "READ-ONLY" },
       { code: "mkdir example", label: "LOCAL" },
-      { code: "/bin/rm -- example", label: "DANGEROUS" },
+      { code: "/bin/rm -- example", label: "MUTATING" },
       { code: "custom --quiet", label: "UNKNOWN" },
     );
     const command = fc.tuple(fc.constantFrom("", "env ", "command -- ", "timeout 1 ",

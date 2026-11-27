@@ -73,7 +73,7 @@ export function classifyProvider(executable: string | undefined, args: readonly 
       return result("UNKNOWN", "Kubernetes resource is ambiguous");
     }
   }
-  if (matches(rules.write)) return result("DANGEROUS", `can change remote state via ${provider}`);
+  if (matches(rules.write)) return result("MUTATING", `can change remote state via ${provider}`);
   if (matches(rules.sensitive)) return result("SENSITIVE", `can return credentials or secret values via ${provider}`);
   if (matches(rules.local)) return result("LOCAL", `can change local state via ${provider}`);
   if (matches(rules.read) && !words.includes(null)) return result("READ-ONLY", `recognized read operation via ${provider}`);

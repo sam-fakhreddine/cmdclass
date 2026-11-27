@@ -4,14 +4,14 @@ import type { AwsEffect } from "./operations.ts";
 type Word = string | null;
 
 const simple: Record<string, [AwsEffect["class"], string]> = {
-  "s3:presign": ["DANGEROUS", "creates a signed download link"],
+  "s3:presign": ["MUTATING", "creates a signed download link"],
   "ecr:get-login-password": ["SENSITIVE", "returns a registry login password"],
   "sso:login": ["LOCAL", "updates the local AWS SSO login cache"],
   "configure:set": ["LOCAL", "updates local AWS configuration"],
   "configure:list": ["READ-ONLY", "lists local AWS configuration"],
   "eks:update-kubeconfig": ["LOCAL", "updates local kubeconfig"],
-  "cloudformation:deploy": ["DANGEROUS", "deploys a CloudFormation stack"],
-  "cloudformation:package": ["DANGEROUS", "may upload CloudFormation artifacts"],
+  "cloudformation:deploy": ["MUTATING", "deploys a CloudFormation stack"],
+  "cloudformation:package": ["MUTATING", "may upload CloudFormation artifacts"],
   "logs:tail": ["READ-ONLY", "reads CloudWatch logs"],
   "s3:ls": ["READ-ONLY", "lists S3 objects or buckets"],
 };
@@ -40,11 +40,11 @@ export function classifyCliOverride(argv: readonly Word[]): AwsEffect | undefine
   if (Object.hasOwn(simple, key)) {
     return hand(...simple[key]);
   } else if (service === "s3" && ["rm", "mv", "mb", "rb", "website"].includes(verb)) {
-    return hand("DANGEROUS", "changes S3 resources");
+    return hand("MUTATING", "changes S3 resources");
   } else if (service === "s3" && ["cp", "sync"].includes(verb)) {
     const source = args[0];
     const target = args[1];
-    return target?.startsWith("s3://") ? hand("DANGEROUS", "writes to S3") :
+    return target?.startsWith("s3://") ? hand("MUTATING", "writes to S3") :
       target && !target.startsWith("-") && source?.startsWith("s3://") ? hand("LOCAL", "downloads to a local destination") :
         unknownAws("S3 transfer direction is not known");
   } else if (verb === "wait" && /^[a-z][a-z0-9-]*$/.test(args[0] ?? "")) {

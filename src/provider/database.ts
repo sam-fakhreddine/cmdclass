@@ -11,7 +11,7 @@ export function isDatabaseProvider(provider: string | undefined): boolean {
 
 export function classifyDatabase(provider: string, args: readonly (string | null)[]): Effect {
   const unknown: Effect = { class: "UNKNOWN", reason: "database operation is unsupported or ambiguous" };
-  const write: Effect = { class: "DANGEROUS", reason: "may change remote database state" };
+  const write: Effect = { class: "MUTATING", reason: "may change remote database state" };
   const read: Effect = { class: "READ-ONLY", reason: "recognized read-only database operation" };
   if (args.some((arg) => arg === null)) return unknown;
   if (provider === "redis-cli") {

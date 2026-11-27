@@ -7,7 +7,7 @@ const cases: Record<string, Partial<Record<Classification, readonly string[]>>> 
   terraform: {
     "READ-ONLY": ["version", "workspace list", "workspace show"],
     LOCAL: ["fmt", "init"],
-    DANGEROUS: ["apply", "destroy"],
+    MUTATING: ["apply", "destroy"],
     UNKNOWN: ["plan", "show", "output", "validate", "state list", "state show aws_instance.example",
       "state pull", "import aws_instance.example example", "state rm aws_instance.example",
       "workspace new example", "-chdir=./infra plan", ""],
@@ -15,25 +15,25 @@ const cases: Record<string, Partial<Record<Classification, readonly string[]>>> 
   pulumi: {
     "READ-ONLY": ["version", "stack ls"],
     LOCAL: ["stack select example"],
-    DANGEROUS: ["up", "destroy"],
+    MUTATING: ["up", "destroy"],
     UNKNOWN: ["preview", "whoami", "config get example:region", ""],
   },
   cdk: {
     LOCAL: ["synth"],
-    DANGEROUS: ["deploy", "destroy"],
+    MUTATING: ["deploy", "destroy"],
     UNKNOWN: ["diff", "synthesize", "list", "ls", "doctor", "bootstrap", ""],
   },
   sam: {
     LOCAL: ["build"],
-    DANGEROUS: ["deploy", "delete"],
+    MUTATING: ["deploy", "delete"],
     UNKNOWN: ["validate", "local invoke", "logs", ""],
   },
   serverless: {
-    DANGEROUS: ["deploy", "remove"],
+    MUTATING: ["deploy", "remove"],
     UNKNOWN: ["info", "print", "package", "invoke local -f example", "invoke -f example", ""],
   },
   "ansible-playbook": {
-    DANGEROUS: ["example.yml", "example.yml --check", "example.yml -C", "example.yml --syntax-check",
+    MUTATING: ["example.yml", "example.yml --check", "example.yml -C", "example.yml --syntax-check",
       "example.yml --list-hosts", "example.yml --list-tasks", "example.yml --list-tags", ""],
   },
 };

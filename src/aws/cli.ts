@@ -2,6 +2,7 @@ import { classifyCliOverride, sdkServiceForCli } from "./cli-rules.ts";
 import { classifyAwsEffect } from "./effects.ts";
 import { classifyCliOperation, loadOfflineSnapshot, unknownAws } from "./operations.ts";
 import type { AwsEffect } from "./operations.ts";
+import { awsPermissions } from "../report.ts";
 
 type Word = string | null;
 const valued = new Set([
@@ -13,9 +14,14 @@ const switches = new Set([
   "--cli-auto-prompt", "--no-cli-auto-prompt",
 ]);
 
-export async function classifyAws(words: readonly Word[], assignedProfile?: Word): Promise<AwsEffect> {
+/**
+ * Splits off the global options of an `aws` command line. Returns the remaining words (service,
+ * operation, arguments) and the `--profile` value when one was given, or undefined when a
+ * global option is missing its value.
+ */
+export function awsArguments(words: readonly Word[]): { argv: Word[]; profile?: Word } | undefined {
   const argv: Word[] = [];
-  let profile = assignedProfile === undefined ? process.env.AWS_PROFILE : assignedProfile ?? undefined;
+  const result: { argv: Word[]; profile?: Word } = { argv };
   for (let i = 1; i < words.length; i++) {
     const word = words[i];
     if (word === null) {
@@ -26,16 +32,38 @@ export async function classifyAws(words: readonly Word[], assignedProfile?: Word
     const flag = idx < 0 ? word : word.slice(0, idx);
     if (valued.has(flag)) {
       const value = idx < 0 ? words[++i] : word.slice(idx + 1);
-      if (value === undefined) return unknownAws("AWS global option has no value");
-      if (flag === "--profile") profile = value ?? undefined;
+      if (value === undefined) return undefined;
+      if (flag === "--profile") result.profile = value;
     } else if (!switches.has(word)) argv.push(word);
   }
+  return result;
+}
+
+export async function classifyAws(words: readonly Word[], assignedProfile?: Word): Promise<AwsEffect> {
+  const parsed = awsArguments(words);
+  if (!parsed) return unknownAws("AWS global option has no value");
+  const { argv } = parsed;
+  let profile = assignedProfile === undefined ? process.env.AWS_PROFILE : assignedProfile ?? undefined;
+  if ("profile" in parsed) profile = parsed.profile ?? undefined;
   const [service, verb, ...args] = argv;
   let effect = classifyCliOverride(argv);
   if (!effect && service && verb) {
     effect = classifyAwsEffect(sdkServiceForCli(service), verb,
       args.includes("--with-decryption") ? true : args.includes(null) ? undefined : false);
-    if (effect && effect.class !== "UNKNOWN") effect = { ...effect, source: "AWS CLI override" };
+    if (effect) {
+      const snapshot = await loadOfflineSnapshot();
+      const mapped = snapshot && classifyCliOperation(snapshot, sdkServiceForCli(service), verb);
+      const permissions = mapped?.[awsPermissions] ?? {
+        actions: [], unknown: "AWS data snapshot unavailable or invalid",
+      };
+      effect = {
+        ...effect,
+        ...(effect.class !== "UNKNOWN" ? { source: "AWS CLI override" } : {}),
+        [awsPermissions]: effect.class === "UNKNOWN" ? {
+          ...permissions, unknown: [effect.reason, permissions.unknown].filter(Boolean).join("; "),
+        } : permissions,
+      };
+    }
   }
   if (!effect) {
     if (service === null || verb === null) {
@@ -48,6 +76,9 @@ export async function classifyAws(words: readonly Word[], assignedProfile?: Word
         ? classifyCliOperation(snapshot, sdkServiceForCli(service), verb)
         : unknownAws("AWS data snapshot unavailable or invalid");
     }
+  }
+  if (!effect[awsPermissions]) {
+    effect = { ...effect, [awsPermissions]: { actions: [], unknown: "AWS CLI helper or command is not mapped to IAM actions" } };
   }
   return {
     ...effect,
