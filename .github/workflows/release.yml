@@ -19,7 +19,9 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22.23.5"
+          # The proof needs a current runtime: it relies on the permission model covering sockets and on
+          # the spec reporter for piped test output. The minimum supported runtime stays in package.json.
+          node-version: "26.13.1"
 
       - name: Verify release tag
         id: package
@@ -39,6 +41,12 @@ jobs:
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
+
+      # The proof installs the packed tarball with --offline, which needs each runtime dependency's
+      # registry metadata in the npm cache. `npm ci` caches the tarballs only.
+      - name: Cache runtime dependency metadata
+        run: |
+          node -p 'Object.entries(require("./package.json").dependencies).map(([name, version]) => name + "@" + version).join(" ")' | xargs npm cache add
 
       - name: Run release proof
         run: npm run test:proof
